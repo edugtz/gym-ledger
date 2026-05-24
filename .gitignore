@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+*/build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Local config
+local.properties
+
+# Generated APKs / build outputs
+*.apk
+*.ap_
+*.dex
+*.class
+
+# Logs
+*.log
+
+# Keystores / signing
+*.jks
+*.keystore
+
+# OpenCode / local AI noise if generated
+.opencod*/cache/
