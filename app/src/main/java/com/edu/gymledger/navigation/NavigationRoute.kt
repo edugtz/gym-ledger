@@ -1,0 +1,15 @@
+package com.edu.gymledger.navigation
+
+sealed class NavigationRoute(val route: String) {
+    object Dashboard : NavigationRoute("dashboard")
+    object Workouts : NavigationRoute("workouts")
+    object WorkoutDetail : NavigationRoute("workout_detail")
+    object Exercises : NavigationRoute("exercises")
+    object Routines : NavigationRoute("routines")
+    object RoutineDetail : NavigationRoute("routine_detail")
+    object Nutrition : NavigationRoute("nutrition")
+    object Foods : NavigationRoute("foods")
+    object MealDetail : NavigationRoute("meal_detail")
+    object Body : NavigationRoute("body")
+    object Settings : NavigationRoute("settings")
+}
