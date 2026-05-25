@@ -1,60 +1,61 @@
+## Phase 4
 
 ````md
-# CURRENT_PHASE.md — Phase 3: Main Navigation
+# CURRENT_PHASE.md — Phase 4: Room Foundation
 
 ## Objective
 
-Create the base app navigation.
+Create the local database foundation.
 
 ## Tasks
 
-Create routes for:
+Create:
 
-- Dashboard
-- Workouts
-- Workout Detail
-- Exercises
-- Routines
-- Routine Detail
-- Nutrition
-- Foods
-- Meal Detail
-- Body
-- Import / Export
-- Settings
+- `GymLedgerDatabase`
+- `ExerciseEntity`
+- `WorkoutSessionEntity`
+- `WorkoutSetEntity`
+- `RoutineEntity`
+- `RoutineExerciseEntity`
+- `FoodEntity`
+- `MealEntity`
+- `MealItemEntity`
+- `BodyMeasurementEntity`
 
-Create bottom navigation for:
+Create basic DAOs for:
 
-- Dashboard
-- Workouts
-- Nutrition
-- Body
-- Settings
+- insert
+- update
+- delete
+- get by id
+- observe/list
 
-Use placeholder screens where features are not implemented yet.
+Create manual `AppContainer`.
 
 ## Do Not Do
 
-- Do not implement CRUD.
-- Do not create Room.
-- Do not connect real data.
+- Do not create CRUD UI.
+- Do not create ViewModels yet.
+- Do not implement import/export.
+- Do not add Hilt.
 
 ## Acceptance Criteria
 
-- User can navigate between main screens.
-- Placeholder screens exist.
-- Dashboard is still the initial screen.
-- Back behavior is reasonable.
+- Room compiles.
+- Database initializes without crash.
+- Foreign keys compile.
+- DAOs compile.
+- App still opens.
 
 ## Validation Commands
 
 ```bash
-./gradlew assembleDebug
+./gradlew clean assembleDebug
 ```
 
 ## Suggested Commit
 
 ```text
-feat: add main navigation
+feat: add Room database foundation
 ```
 ````
