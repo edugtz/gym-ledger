@@ -1,61 +1,61 @@
-## Phase 4
-
-````md
-# CURRENT_PHASE.md — Phase 4: Room Foundation
+# CURRENT_PHASE.md — Phase 5: Room Smoke Tests
 
 ## Objective
 
-Create the local database foundation.
+Verify the Room database foundation works before building repositories and features on top of it.
+
+## Test Strategy
+
+Use local JVM unit tests with Robolectric.
+
+Tests must live under:
+
+```text
+app/src/test/
+```
+
+Do not move these tests to `androidTest`.
+
+Do not use `connectedDebugAndroidTest`.
 
 ## Tasks
 
-Create:
-
-- `GymLedgerDatabase`
-- `ExerciseEntity`
-- `WorkoutSessionEntity`
-- `WorkoutSetEntity`
-- `RoutineEntity`
-- `RoutineExerciseEntity`
-- `FoodEntity`
-- `MealEntity`
-- `MealItemEntity`
-- `BodyMeasurementEntity`
-
-Create basic DAOs for:
-
-- insert
-- update
-- delete
-- get by id
-- observe/list
-
-Create manual `AppContainer`.
+- Add only the minimum test dependencies required for local JVM Room tests.
+- Create a Room in-memory database test setup under `app/src/test/`.
+- Test inserting an exercise.
+- Test reading exercises.
+- Test deleting an exercise.
+- Close the database after each test.
 
 ## Do Not Do
 
-- Do not create CRUD UI.
-- Do not create ViewModels yet.
-- Do not implement import/export.
-- Do not add Hilt.
+- Do not create UI.
+- Do not create user flows.
+- Do not add repositories.
+- Do not add ViewModels.
+- Do not add business logic.
+- Do not move tests to `androidTest`.
+- Do not use instrumented tests.
+- Do not use `connectedDebugAndroidTest`.
+- Do not implement future phases.
 
 ## Acceptance Criteria
 
-- Room compiles.
-- Database initializes without crash.
-- Foreign keys compile.
-- DAOs compile.
-- App still opens.
+- `./gradlew testDebugUnitTest` passes.
+- `./gradlew assembleDebug` passes.
+- Room works with an in-memory database in local JVM tests.
+- Exercise insert/read/delete smoke tests pass.
+- App still launches without crash.
 
 ## Validation Commands
 
 ```bash
-./gradlew clean assembleDebug
+./gradlew testDebugUnitTest
+./gradlew assembleDebug
 ```
 
 ## Suggested Commit
 
 ```text
-feat: add Room database foundation
+test: add Room smoke tests
 ```
-````

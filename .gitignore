@@ -32,3 +32,5 @@ local.properties
 
 # OpenCode / local AI noise if generated
 .opencod*/cache/
+
+docs
