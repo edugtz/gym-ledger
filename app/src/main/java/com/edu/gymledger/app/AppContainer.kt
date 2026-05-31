@@ -3,6 +3,7 @@ package com.edu.gymledger.app
 import android.content.Context
 import androidx.room.Room
 import com.edu.gymledger.data.db.GymLedgerDatabase
+import com.edu.gymledger.data.repository.ExerciseRepository
 
 object AppContainer {
     private var database: GymLedgerDatabase? = null
@@ -47,4 +48,7 @@ object AppContainer {
 
     val bodyMeasurementDao: com.edu.gymledger.data.db.dao.BodyMeasurementDao
         get() = database!!.bodyMeasurementDao()
+
+    val exerciseRepository: ExerciseRepository
+        get() = ExerciseRepository(database!!.exerciseDao())
 }
