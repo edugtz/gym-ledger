@@ -19,7 +19,7 @@ import com.edu.gymledger.data.db.entity.*
         MealItemEntity::class,
         BodyMeasurementEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class GymLedgerDatabase : RoomDatabase() {
@@ -43,7 +43,9 @@ abstract class GymLedgerDatabase : RoomDatabase() {
                     context.applicationContext,
                     GymLedgerDatabase::class.java,
                     "gym_ledger_database"
-                ).build()
+                )
+                    .fallbackToDestructiveMigration()
+                    .build()
                 INSTANCE = instance
                 instance
             }

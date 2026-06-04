@@ -2,8 +2,6 @@ package com.edu.gymledger.data.repository
 
 import androidx.room.Room
 import com.edu.gymledger.data.db.GymLedgerDatabase
-import com.edu.gymledger.data.db.entity.ExerciseType
-import com.edu.gymledger.data.db.entity.MuscleGroup
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -42,22 +40,29 @@ class ExerciseRepositoryTest {
     fun create_exerciseWithValidName_succeeds() = runTest {
         val exercise = repository.create(
             name = "Bench Press",
-            type = ExerciseType.COMPOUND,
-            muscleGroup = MuscleGroup.CHEST
+            category = "Upper Body",
+            primaryMuscle = "Chest",
+            secondaryMuscles = "Triceps, Shoulders",
+            equipment = "Barbell",
+            notes = null
         )
 
         assertTrue(exercise.id > 0)
         assertEquals("Bench Press", exercise.name)
-        assertEquals(ExerciseType.COMPOUND, exercise.type)
-        assertEquals(MuscleGroup.CHEST, exercise.muscleGroup)
+        assertEquals("Upper Body", exercise.category)
+        assertEquals("Chest", exercise.primaryMuscle)
+        assertEquals("Barbell", exercise.equipment)
     }
 
     @Test
     fun create_exerciseNameIsTrimmed() = runTest {
         val exercise = repository.create(
             name = "  Squat  ",
-            type = ExerciseType.COMPOUND,
-            muscleGroup = MuscleGroup.LEGS
+            category = "Lower Body",
+            primaryMuscle = "Quadriceps",
+            secondaryMuscles = "Glutes, Hamstrings",
+            equipment = "Barbell",
+            notes = null
         )
 
         assertEquals("Squat", exercise.name)
@@ -67,8 +72,11 @@ class ExerciseRepositoryTest {
     fun create_blankName_throws() = runTest {
         repository.create(
             name = "",
-            type = ExerciseType.ISOLATION,
-            muscleGroup = MuscleGroup.ARMS
+            category = "Upper Body",
+            primaryMuscle = "Biceps",
+            secondaryMuscles = null,
+            equipment = "Dumbbell",
+            notes = null
         )
     }
 
@@ -76,8 +84,11 @@ class ExerciseRepositoryTest {
     fun create_whitespaceOnlyName_throws() = runTest {
         repository.create(
             name = "   ",
-            type = ExerciseType.ISOLATION,
-            muscleGroup = MuscleGroup.ARMS
+            category = "Upper Body",
+            primaryMuscle = "Biceps",
+            secondaryMuscles = null,
+            equipment = "Dumbbell",
+            notes = null
         )
     }
 
@@ -85,8 +96,11 @@ class ExerciseRepositoryTest {
     fun getById_existingId_returnsExercise() = runTest {
         val created = repository.create(
             name = "Deadlift",
-            type = ExerciseType.COMPOUND,
-            muscleGroup = MuscleGroup.BACK
+            category = "Full Body",
+            primaryMuscle = "Erector Spinae",
+            secondaryMuscles = "Hamstrings, Glutes",
+            equipment = "Barbell",
+            notes = null
         )
 
         val found = repository.getById(created.id)
@@ -103,8 +117,22 @@ class ExerciseRepositoryTest {
 
     @Test
     fun getAll_returnsAllExercises() = runTest {
-        repository.create("Bench Press", ExerciseType.COMPOUND, MuscleGroup.CHEST)
-        repository.create("Squat", ExerciseType.COMPOUND, MuscleGroup.LEGS)
+        repository.create(
+            name = "Bench Press",
+            category = "Upper Body",
+            primaryMuscle = "Chest",
+            secondaryMuscles = null,
+            equipment = "Barbell",
+            notes = null
+        )
+        repository.create(
+            name = "Squat",
+            category = "Lower Body",
+            primaryMuscle = "Quadriceps",
+            secondaryMuscles = null,
+            equipment = "Barbell",
+            notes = null
+        )
 
         val all = repository.getAll().first()
 
@@ -115,8 +143,11 @@ class ExerciseRepositoryTest {
     fun update_existingExercise_succeeds() = runTest {
         val created = repository.create(
             name = "Old Name",
-            type = ExerciseType.ISOLATION,
-            muscleGroup = MuscleGroup.ARMS
+            category = "Upper Body",
+            primaryMuscle = "Biceps",
+            secondaryMuscles = null,
+            equipment = "Dumbbell",
+            notes = null
         )
 
         val updated = repository.update(created.copy(name = "  New Name  "))
@@ -128,8 +159,11 @@ class ExerciseRepositoryTest {
     fun update_blankName_throws() = runTest {
         val created = repository.create(
             name = "Valid",
-            type = ExerciseType.ISOLATION,
-            muscleGroup = MuscleGroup.ARMS
+            category = "Upper Body",
+            primaryMuscle = "Biceps",
+            secondaryMuscles = null,
+            equipment = "Dumbbell",
+            notes = null
         )
 
         repository.update(created.copy(name = ""))
@@ -139,8 +173,11 @@ class ExerciseRepositoryTest {
     fun delete_existingExercise_removesIt() = runTest {
         val created = repository.create(
             name = "Overhead Press",
-            type = ExerciseType.COMPOUND,
-            muscleGroup = MuscleGroup.SHOULDERS
+            category = "Upper Body",
+            primaryMuscle = "Deltoids",
+            secondaryMuscles = "Triceps",
+            equipment = "Barbell",
+            notes = null
         )
 
         repository.delete(created)

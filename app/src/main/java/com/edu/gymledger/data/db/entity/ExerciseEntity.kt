@@ -8,21 +8,11 @@ data class ExerciseEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val name: String,
-    val type: ExerciseType,
-    val muscleGroup: MuscleGroup
+    val category: String?,
+    val primaryMuscle: String?,
+    val secondaryMuscles: String?,
+    val equipment: String?,
+    val notes: String?,
+    val createdAt: String,
+    val updatedAt: String
 )
-
-enum class ExerciseType {
-    COMPOUND,
-    ISOLATION,
-    CARDIO
-}
-
-enum class MuscleGroup {
-    CHEST,
-    BACK,
-    SHOULDERS,
-    ARMS,
-    LEGS,
-    CORE
-}

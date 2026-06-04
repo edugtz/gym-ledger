@@ -19,7 +19,9 @@ object AppContainer {
             context.applicationContext,
             GymLedgerDatabase::class.java,
             "gym_ledger_database"
-        ).build()
+        )
+            .fallbackToDestructiveMigration()
+            .build()
     }
 
     val exerciseDao: com.edu.gymledger.data.db.dao.ExerciseDao

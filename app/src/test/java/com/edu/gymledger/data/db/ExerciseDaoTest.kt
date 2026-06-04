@@ -44,8 +44,13 @@ class ExerciseDaoTest {
     fun insertExercise_insertsSuccessfully_returnsId() = runTest {
         val exercise = ExerciseEntity(
             name = "Bench Press",
-            type = com.edu.gymledger.data.db.entity.ExerciseType.COMPOUND,
-            muscleGroup = com.edu.gymledger.data.db.entity.MuscleGroup.CHEST
+            category = "Upper Body",
+            primaryMuscle = "Chest",
+            secondaryMuscles = "Triceps, Shoulders",
+            equipment = "Barbell",
+            notes = null,
+            createdAt = "2026-05-23T10:00:00Z",
+            updatedAt = "2026-05-23T10:00:00Z"
         )
 
         val id = exerciseDao.insert(exercise)
@@ -57,8 +62,13 @@ class ExerciseDaoTest {
     fun insertExercise_thenGetById_returnsCorrectEntity() = runTest {
         val exercise = ExerciseEntity(
             name = "Squat",
-            type = com.edu.gymledger.data.db.entity.ExerciseType.COMPOUND,
-            muscleGroup = com.edu.gymledger.data.db.entity.MuscleGroup.LEGS
+            category = "Lower Body",
+            primaryMuscle = "Quadriceps",
+            secondaryMuscles = "Glutes, Hamstrings",
+            equipment = "Barbell",
+            notes = null,
+            createdAt = "2026-05-23T10:00:00Z",
+            updatedAt = "2026-05-23T10:00:00Z"
         )
 
         val id = exerciseDao.insert(exercise)
@@ -66,21 +76,31 @@ class ExerciseDaoTest {
 
         assertNotNull(retrievedExercise)
         assertEquals(id, retrievedExercise!!.id)
-        assertEquals("Squat", retrievedExercise!!.name)
+        assertEquals("Squat", retrievedExercise.name)
     }
 
     @Test
     fun insertMultipleExercises_thenListAll_returnsAll() = runTest {
         val exercise1 = ExerciseEntity(
             name = "Deadlift",
-            type = com.edu.gymledger.data.db.entity.ExerciseType.COMPOUND,
-            muscleGroup = com.edu.gymledger.data.db.entity.MuscleGroup.BACK
+            category = "Full Body",
+            primaryMuscle = "Erector Spinae",
+            secondaryMuscles = "Hamstrings, Glutes",
+            equipment = "Barbell",
+            notes = null,
+            createdAt = "2026-05-23T10:00:00Z",
+            updatedAt = "2026-05-23T10:00:00Z"
         )
 
         val exercise2 = ExerciseEntity(
             name = "Bicep Curls",
-            type = com.edu.gymledger.data.db.entity.ExerciseType.ISOLATION,
-            muscleGroup = com.edu.gymledger.data.db.entity.MuscleGroup.ARMS
+            category = "Upper Body",
+            primaryMuscle = "Biceps",
+            secondaryMuscles = null,
+            equipment = "Dumbbell",
+            notes = null,
+            createdAt = "2026-05-23T10:00:00Z",
+            updatedAt = "2026-05-23T10:00:00Z"
         )
 
         exerciseDao.insert(exercise1)
@@ -95,8 +115,13 @@ class ExerciseDaoTest {
     fun insertExercise_thenDelete_removesFromDatabase() = runTest {
         val exercise = ExerciseEntity(
             name = "Overhead Press",
-            type = com.edu.gymledger.data.db.entity.ExerciseType.COMPOUND,
-            muscleGroup = com.edu.gymledger.data.db.entity.MuscleGroup.SHOULDERS
+            category = "Upper Body",
+            primaryMuscle = "Deltoids",
+            secondaryMuscles = "Triceps",
+            equipment = "Barbell",
+            notes = null,
+            createdAt = "2026-05-23T10:00:00Z",
+            updatedAt = "2026-05-23T10:00:00Z"
         )
 
         val id = exerciseDao.insert(exercise)

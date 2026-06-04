@@ -1,20 +1,27 @@
 package com.edu.gymledger.domain.model
 
-import com.edu.gymledger.data.db.entity.ExerciseType
-import com.edu.gymledger.data.db.entity.MuscleGroup
-
 data class Exercise(
     val id: Long,
     val name: String,
-    val type: ExerciseType,
-    val muscleGroup: MuscleGroup
+    val category: String?,
+    val primaryMuscle: String?,
+    val secondaryMuscles: String?,
+    val equipment: String?,
+    val notes: String?,
+    val createdAt: String,
+    val updatedAt: String
 ) {
     fun toEntity(): com.edu.gymledger.data.db.entity.ExerciseEntity {
         return com.edu.gymledger.data.db.entity.ExerciseEntity(
             id = id,
             name = name,
-            type = type,
-            muscleGroup = muscleGroup
+            category = category,
+            primaryMuscle = primaryMuscle,
+            secondaryMuscles = secondaryMuscles,
+            equipment = equipment,
+            notes = notes,
+            createdAt = createdAt,
+            updatedAt = updatedAt
         )
     }
 
@@ -23,8 +30,13 @@ data class Exercise(
             return Exercise(
                 id = entity.id,
                 name = entity.name,
-                type = entity.type,
-                muscleGroup = entity.muscleGroup
+                category = entity.category,
+                primaryMuscle = entity.primaryMuscle,
+                secondaryMuscles = entity.secondaryMuscles,
+                equipment = entity.equipment,
+                notes = entity.notes,
+                createdAt = entity.createdAt,
+                updatedAt = entity.updatedAt
             )
         }
     }
