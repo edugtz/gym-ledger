@@ -34,3 +34,7 @@ local.properties
 .opencod*/cache/
 
 docs
+# Local AI planning / agent files
+AGENTS.md
+docs/
+.codex/
