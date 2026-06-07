@@ -11,7 +11,8 @@ import androidx.room.PrimaryKey
         ForeignKey(
             entity = WorkoutSessionEntity::class,
             parentColumns = ["id"],
-            childColumns = ["sessionId"]
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE
         ),
         ForeignKey(
             entity = ExerciseEntity::class,
@@ -27,11 +28,14 @@ import androidx.room.PrimaryKey
 data class WorkoutSetEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val sessionId: Long, // FK to WorkoutSessionEntity
-    val exerciseId: Long, // FK to ExerciseEntity
+    val sessionId: Long,
+    val exerciseId: Long,
+    val setIndex: Int,
     val reps: Int,
-    val weight: Double? = null, // kg or lbs depending on unit preference
-    val completed: Boolean = false,
-    var orderNum: Int? = null, // Renamed to avoid SQL keyword conflict
-    val notes: String? = null
+    val weight: Double? = null,
+    val rpe: Double? = null,
+    val rir: Int? = null,
+    val notes: String? = null,
+    val createdAt: String,
+    val updatedAt: String
 )

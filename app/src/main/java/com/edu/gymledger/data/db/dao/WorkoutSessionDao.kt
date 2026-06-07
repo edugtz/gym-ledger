@@ -18,6 +18,6 @@ interface WorkoutSessionDao {
     @Query("SELECT * FROM workout_sessions WHERE id = :id")
     suspend fun getById(id: Long): WorkoutSessionEntity?
 
-    @Query("SELECT * FROM workout_sessions ORDER BY date DESC")
+    @Query("SELECT * FROM workout_sessions ORDER BY startedAt DESC")
     fun listAll(): Flow<List<WorkoutSessionEntity>>
 }

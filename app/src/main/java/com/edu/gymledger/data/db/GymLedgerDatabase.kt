@@ -19,7 +19,7 @@ import com.edu.gymledger.data.db.entity.*
         MealItemEntity::class,
         BodyMeasurementEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class GymLedgerDatabase : RoomDatabase() {
