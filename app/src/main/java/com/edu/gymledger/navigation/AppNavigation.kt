@@ -40,12 +40,18 @@ fun AppNavigation(navController: NavHostController) {
         // Workouts
         composable(NavigationRoute.Workouts.route) {
             WorkoutsScreen(
-                onNavigateToExercises = { navController.navigate(NavigationRoute.Exercises.route) }
+                onNavigateToExercises = { navController.navigate(NavigationRoute.Exercises.route) },
+                onNavigateToWorkoutDetail = { workoutId ->
+                    navController.navigate("${NavigationRoute.WorkoutDetail.route}/$workoutId")
+                }
             )
         }
         composable("${NavigationRoute.WorkoutDetail.route}/{workoutId}") { backStackEntry ->
-            val workoutId = backStackEntry.arguments?.getString("workoutId") ?: ""
-            WorkoutDetailScreen()
+            val workoutId = backStackEntry.arguments?.getString("workoutId")?.toLongOrNull()
+            WorkoutDetailScreen(
+                sessionId = workoutId,
+                onNavigateBack = { navController.popBackStack() }
+            )
         }
 
         // Exercises
