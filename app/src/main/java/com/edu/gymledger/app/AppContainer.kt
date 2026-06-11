@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import com.edu.gymledger.data.db.GymLedgerDatabase
 import com.edu.gymledger.data.repository.ExerciseRepository
+import com.edu.gymledger.data.repository.RoutineExerciseRepository
+import com.edu.gymledger.data.repository.RoutineRepository
 import com.edu.gymledger.data.repository.WorkoutRepository
 
 object AppContainer {
@@ -59,6 +61,19 @@ object AppContainer {
         get() = WorkoutRepository(
             database!!.workoutSessionDao(),
             database!!.workoutSetDao(),
+            database!!.exerciseDao()
+        )
+
+    val routineRepository: RoutineRepository
+        get() = RoutineRepository(
+            database!!.routineDao(),
+            database!!.routineExerciseDao()
+        )
+
+    val routineExerciseRepository: RoutineExerciseRepository
+        get() = RoutineExerciseRepository(
+            database!!.routineExerciseDao(),
+            database!!.routineDao(),
             database!!.exerciseDao()
         )
 }
