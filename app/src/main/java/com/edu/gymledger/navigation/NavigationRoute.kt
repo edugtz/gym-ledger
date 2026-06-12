@@ -18,5 +18,8 @@ sealed class NavigationRoute(val route: String) {
     companion object {
         fun exerciseEditRoute(exerciseId: Long): String =
             "exercise_edit/$exerciseId"
+
+        fun routineDetailRoute(routineId: Long): String =
+            "routine_detail/$routineId"
     }
 }

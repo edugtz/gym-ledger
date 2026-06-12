@@ -43,7 +43,8 @@ fun AppNavigation(navController: NavHostController) {
                 onNavigateToExercises = { navController.navigate(NavigationRoute.Exercises.route) },
                 onNavigateToWorkoutDetail = { workoutId ->
                     navController.navigate("${NavigationRoute.WorkoutDetail.route}/$workoutId")
-                }
+                },
+                onNavigateToRoutines = { navController.navigate(NavigationRoute.Routines.route) }
             )
         }
         composable("${NavigationRoute.WorkoutDetail.route}/{workoutId}") { backStackEntry ->
@@ -132,11 +133,18 @@ fun AppNavigation(navController: NavHostController) {
 
         // Routines
         composable(NavigationRoute.Routines.route) {
-            RoutinesScreen()
+            RoutinesScreen(
+                onNavigateToRoutineDetail = { routineId ->
+                    navController.navigate(NavigationRoute.routineDetailRoute(routineId))
+                }
+            )
         }
         composable("${NavigationRoute.RoutineDetail.route}/{routineId}") { backStackEntry ->
-            val routineId = backStackEntry.arguments?.getString("routineId") ?: ""
-            RoutineDetailScreen()
+            val routineId = backStackEntry.arguments?.getString("routineId")?.toLongOrNull()
+            RoutineDetailScreen(
+                routineId = routineId,
+                onNavigateBack = { navController.popBackStack() }
+            )
         }
 
         // Nutrition

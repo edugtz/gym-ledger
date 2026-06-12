@@ -52,6 +52,7 @@ import java.time.format.DateTimeFormatter
 fun WorkoutsScreen(
     onNavigateToExercises: () -> Unit,
     onNavigateToWorkoutDetail: (Long) -> Unit,
+    onNavigateToRoutines: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: WorkoutsViewModel = viewModel(factory = WorkoutsViewModelFactory(AppContainer.workoutRepository))
 ) {
@@ -108,6 +109,31 @@ fun WorkoutsScreen(
                     )
                     Text(
                         text = "Manage exercise library",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                onClick = onNavigateToRoutines,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = "Routines",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Text(
+                        text = "Organize exercises into workout plans",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                     )
