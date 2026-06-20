@@ -21,5 +21,8 @@ sealed class NavigationRoute(val route: String) {
 
         fun routineDetailRoute(routineId: Long): String =
             "routine_detail/$routineId"
+
+        fun workoutDetailRoute(sessionId: Long): String =
+            "workout_detail/$sessionId"
     }
 }

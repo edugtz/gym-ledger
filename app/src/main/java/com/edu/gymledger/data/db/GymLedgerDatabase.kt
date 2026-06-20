@@ -14,12 +14,13 @@ import com.edu.gymledger.data.db.entity.*
         WorkoutSetEntity::class,
         RoutineEntity::class,
         RoutineExerciseEntity::class,
+        WorkoutSessionExerciseEntity::class,
         FoodEntity::class,
         MealEntity::class,
         MealItemEntity::class,
         BodyMeasurementEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class GymLedgerDatabase : RoomDatabase() {
@@ -33,6 +34,7 @@ abstract class GymLedgerDatabase : RoomDatabase() {
     abstract fun mealDao(): MealDao
     abstract fun mealItemDao(): MealItemDao
     abstract fun bodyMeasurementDao(): BodyMeasurementDao
+    abstract fun workoutSessionExerciseDao(): WorkoutSessionExerciseDao
 
     companion object {
         private var INSTANCE: GymLedgerDatabase? = null

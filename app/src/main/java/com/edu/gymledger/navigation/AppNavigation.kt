@@ -143,7 +143,10 @@ fun AppNavigation(navController: NavHostController) {
             val routineId = backStackEntry.arguments?.getString("routineId")?.toLongOrNull()
             RoutineDetailScreen(
                 routineId = routineId,
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToWorkoutDetail = { sessionId ->
+                    navController.navigate(NavigationRoute.workoutDetailRoute(sessionId))
+                }
             )
         }
 

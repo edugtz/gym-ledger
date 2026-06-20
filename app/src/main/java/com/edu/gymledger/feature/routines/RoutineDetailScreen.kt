@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -34,6 +35,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -54,12 +56,15 @@ import com.edu.gymledger.domain.model.Exercise
 fun RoutineDetailScreen(
     routineId: Long?,
     onNavigateBack: () -> Unit,
+    onNavigateToWorkoutDetail: (Long) -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: RoutineDetailViewModel = viewModel(
         factory = RoutineDetailViewModelFactory(
             AppContainer.routineRepository,
             AppContainer.routineExerciseRepository,
-            AppContainer.exerciseRepository
+            AppContainer.exerciseRepository,
+            AppContainer.workoutRepository,
+            AppContainer.workoutSessionExerciseRepository
         )
     )
 ) {
@@ -107,6 +112,17 @@ fun RoutineDetailScreen(
                 },
                 actions = {
                     if (routine != null) {
+                        TextButton(
+                            onClick = { viewModel.startWorkout { sessionId -> onNavigateToWorkoutDetail(sessionId) } }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Start workout")
+                        }
                         IconButton(onClick = { viewModel.showRenameDialog() }) {
                             Icon(
                                 imageVector = Icons.Default.Edit,

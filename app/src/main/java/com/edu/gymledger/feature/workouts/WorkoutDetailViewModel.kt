@@ -4,17 +4,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.edu.gymledger.data.repository.ExerciseRepository
 import com.edu.gymledger.data.repository.WorkoutRepository
+import com.edu.gymledger.data.repository.WorkoutSessionExerciseRepository
 import com.edu.gymledger.domain.model.Exercise
 import com.edu.gymledger.domain.model.WorkoutSession
 import com.edu.gymledger.domain.model.WorkoutSet
+import com.edu.gymledger.domain.model.WorkoutSessionExercise
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class WorkoutDetailViewModel(
     private val workoutRepository: WorkoutRepository,
-    private val exerciseRepository: ExerciseRepository
+    private val exerciseRepository: ExerciseRepository,
+    private val workoutSessionExerciseRepository: WorkoutSessionExerciseRepository
 ) : ViewModel() {
 
     private val _session = MutableStateFlow<WorkoutSession?>(null)
@@ -31,6 +36,16 @@ class WorkoutDetailViewModel(
 
     private val _deleteTarget = MutableStateFlow<WorkoutSet?>(null)
     val deleteTarget: StateFlow<WorkoutSet?> = _deleteTarget.asStateFlow()
+
+    data class WorkoutSessionExerciseUiItem(
+        val sessionExercise: WorkoutSessionExercise,
+        val exercise: Exercise?
+    )
+
+    private val _plannedExercises = MutableStateFlow<List<WorkoutSessionExerciseUiItem>>(emptyList())
+    val plannedExercises: StateFlow<List<WorkoutSessionExerciseUiItem>> = _plannedExercises.asStateFlow()
+
+    private var plannedExercisesJob: Job? = null
 
     private val _editTarget = MutableStateFlow<WorkoutSet?>(null)
     val editTarget: StateFlow<WorkoutSet?> = _editTarget.asStateFlow()
@@ -54,6 +69,27 @@ class WorkoutDetailViewModel(
                 _sets.value = result?.sets ?: emptyList()
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load session"
+            }
+        }
+        observePlannedExercises(sessionId)
+    }
+
+    private fun observePlannedExercises(sessionId: Long) {
+        plannedExercisesJob?.cancel()
+        plannedExercisesJob = viewModelScope.launch {
+            combine(
+                workoutSessionExerciseRepository.listBySession(sessionId),
+                exerciseRepository.getAll()
+            ) { sessionExercises, allExercises ->
+                val exerciseMap = allExercises.associateBy { it.id }
+                sessionExercises.map { se ->
+                    WorkoutSessionExerciseUiItem(
+                        sessionExercise = se,
+                        exercise = exerciseMap[se.exerciseId]
+                    )
+                }
+            }.collect { items ->
+                _plannedExercises.value = items
             }
         }
     }
@@ -158,6 +194,17 @@ class WorkoutDetailViewModel(
 
     fun cancelEdit() {
         _editTarget.value = null
+    }
+
+    private val _preselectedExerciseId = MutableStateFlow<Long?>(null)
+    val preselectedExerciseId: StateFlow<Long?> = _preselectedExerciseId.asStateFlow()
+
+    fun preselectExercise(exerciseId: Long) {
+        _preselectedExerciseId.value = exerciseId
+    }
+
+    fun clearPreselectedExercise() {
+        _preselectedExerciseId.value = null
     }
 
     fun clearError() {

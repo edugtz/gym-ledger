@@ -7,6 +7,7 @@ import com.edu.gymledger.data.repository.ExerciseRepository
 import com.edu.gymledger.data.repository.RoutineExerciseRepository
 import com.edu.gymledger.data.repository.RoutineRepository
 import com.edu.gymledger.data.repository.WorkoutRepository
+import com.edu.gymledger.data.repository.WorkoutSessionExerciseRepository
 
 object AppContainer {
     private var database: GymLedgerDatabase? = null
@@ -54,6 +55,9 @@ object AppContainer {
     val bodyMeasurementDao: com.edu.gymledger.data.db.dao.BodyMeasurementDao
         get() = database!!.bodyMeasurementDao()
 
+    val workoutSessionExerciseDao: com.edu.gymledger.data.db.dao.WorkoutSessionExerciseDao
+        get() = database!!.workoutSessionExerciseDao()
+
     val exerciseRepository: ExerciseRepository
         get() = ExerciseRepository(database!!.exerciseDao())
 
@@ -74,6 +78,13 @@ object AppContainer {
         get() = RoutineExerciseRepository(
             database!!.routineExerciseDao(),
             database!!.routineDao(),
+            database!!.exerciseDao()
+        )
+
+    val workoutSessionExerciseRepository: WorkoutSessionExerciseRepository
+        get() = WorkoutSessionExerciseRepository(
+            database!!.workoutSessionExerciseDao(),
+            database!!.workoutSessionDao(),
             database!!.exerciseDao()
         )
 }

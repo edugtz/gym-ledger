@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.edu.gymledger.data.repository.ExerciseRepository
 import com.edu.gymledger.data.repository.RoutineExerciseRepository
 import com.edu.gymledger.data.repository.RoutineRepository
+import com.edu.gymledger.data.repository.WorkoutRepository
+import com.edu.gymledger.data.repository.WorkoutSessionExerciseRepository
 import com.edu.gymledger.domain.model.Exercise
 import com.edu.gymledger.domain.model.Routine
 import com.edu.gymledger.domain.model.RoutineExercise
@@ -15,15 +17,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class RoutineDetailViewModel(
     private val routineRepository: RoutineRepository,
     private val routineExerciseRepository: RoutineExerciseRepository,
-    private val exerciseRepository: ExerciseRepository
+    private val exerciseRepository: ExerciseRepository,
+    private val workoutRepository: WorkoutRepository,
+    private val workoutSessionExerciseRepository: WorkoutSessionExerciseRepository
 ) : ViewModel() {
 
     data class RoutineExerciseUiItem(
@@ -215,6 +221,38 @@ class RoutineDetailViewModel(
                 _showRenameDialog.value = false
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to rename routine"
+            }
+        }
+    }
+
+    fun startWorkout(onWorkoutCreated: (Long) -> Unit) {
+        val routine = _routine.value ?: return
+        val routineId = _routineId.value ?: return
+        val exercises = uiItems.value
+        if (exercises.isEmpty()) {
+            _error.value = "Add exercises before starting this routine."
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val now = Instant.now().toString()
+                val session = workoutRepository.createSession(
+                    routineId = routineId,
+                    title = routine.name,
+                    startedAt = now,
+                    notes = null
+                )
+                for (item in exercises) {
+                    workoutSessionExerciseRepository.create(
+                        sessionId = session.id,
+                        exerciseId = item.routineExercise.exerciseId,
+                        orderNum = item.routineExercise.orderNum ?: 1,
+                        notes = item.routineExercise.notes
+                    )
+                }
+                onWorkoutCreated(session.id)
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Failed to start workout"
             }
         }
     }

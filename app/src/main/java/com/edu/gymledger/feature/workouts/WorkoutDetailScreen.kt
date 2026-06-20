@@ -56,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.edu.gymledger.app.AppContainer
@@ -74,7 +75,8 @@ fun WorkoutDetailScreen(
     viewModel: WorkoutDetailViewModel = viewModel(
         factory = WorkoutDetailViewModelFactory(
             AppContainer.workoutRepository,
-            AppContainer.exerciseRepository
+            AppContainer.exerciseRepository,
+            AppContainer.workoutSessionExerciseRepository
         )
     )
 ) {
@@ -84,9 +86,17 @@ fun WorkoutDetailScreen(
     val error by viewModel.error.collectAsState()
     val deleteTarget by viewModel.deleteTarget.collectAsState()
     val editTarget by viewModel.editTarget.collectAsState()
+    val plannedExercises by viewModel.plannedExercises.collectAsState()
+    val preselectedExerciseId by viewModel.preselectedExerciseId.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(preselectedExerciseId) {
+        if (preselectedExerciseId != null) {
+            showAddDialog = true
+        }
+    }
 
     LaunchedEffect(sessionId) {
         sessionId?.let { viewModel.loadSession(it) }
@@ -131,12 +141,6 @@ fun WorkoutDetailScreen(
                         modifier = Modifier.align(Alignment.Center)
                     )
                 }
-                sets.isEmpty() -> {
-                    EmptySetsState(
-                        onAddSet = { showAddDialog = true },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
                 else -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -146,13 +150,37 @@ fun WorkoutDetailScreen(
                         item(key = "header") {
                             SessionHeader(session = session!!)
                         }
-                        items(sets, key = { it.id }) { set ->
-                            SetCard(
-                                set = set,
-                                exerciseName = exercises.find { it.id == set.exerciseId }?.name ?: "Unknown",
-                                onEdit = { viewModel.requestEdit(set) },
-                                onDelete = { viewModel.requestDelete(set) }
-                            )
+
+                        if (plannedExercises.isNotEmpty()) {
+                            item(key = "planned_header") {
+                                Text(
+                                    text = "Routine exercises",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                                )
+                            }
+                            items(plannedExercises, key = { it.sessionExercise.id }) { item ->
+                                PlannedExerciseCard(
+                                    uiItem = item,
+                                    onLogSet = { exerciseId -> viewModel.preselectExercise(exerciseId) }
+                                )
+                            }
+                        }
+
+                        if (sets.isNotEmpty()) {
+                            items(sets, key = { it.id }) { set ->
+                                SetCard(
+                                    set = set,
+                                    exerciseName = exercises.find { it.id == set.exerciseId }?.name ?: "Unknown",
+                                    onEdit = { viewModel.requestEdit(set) },
+                                    onDelete = { viewModel.requestDelete(set) }
+                                )
+                            }
+                        } else {
+                            item(key = "empty_sets") {
+                                EmptySetsInline(onAddSet = { showAddDialog = true })
+                            }
                         }
                     }
                 }
@@ -164,9 +192,11 @@ fun WorkoutDetailScreen(
         AddEditSetSheet(
             set = editTarget,
             exercises = exercises,
+            initialExerciseId = preselectedExerciseId,
             onDismiss = {
                 showAddDialog = false
                 viewModel.cancelEdit()
+                viewModel.clearPreselectedExercise()
             },
             onSave = { exerciseId, reps, weight, rpe, rir, notes ->
                 if (editTarget != null) {
@@ -176,6 +206,7 @@ fun WorkoutDetailScreen(
                 }
                 showAddDialog = false
                 viewModel.cancelEdit()
+                viewModel.clearPreselectedExercise()
             }
         )
     }
@@ -200,22 +231,72 @@ fun WorkoutDetailScreen(
 }
 
 @Composable
-private fun EmptySetsState(
-    onAddSet: () -> Unit,
-    modifier: Modifier = Modifier
+private fun PlannedExerciseCard(
+    uiItem: WorkoutDetailViewModel.WorkoutSessionExerciseUiItem,
+    onLogSet: (Long) -> Unit
 ) {
-    Column(
-        modifier = modifier.padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+    val exercise = uiItem.exercise
+    val name = exercise?.name ?: "Unknown exercise"
+    val category = exercise?.category
+    val primaryMuscle = exercise?.primaryMuscle
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Icon(
-            imageVector = Icons.Default.Info,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp),
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val subtitle = buildList {
+                        category?.let { add(it) }
+                        primaryMuscle?.let { add(it) }
+                    }.joinToString(" / ")
+                    if (subtitle.isNotBlank()) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                FilledTonalButton(
+                    onClick = { onLogSet(uiItem.sessionExercise.exerciseId) }
+                ) {
+                    Text("Log set")
+                }
+            }
+            uiItem.sessionExercise.notes?.let { notes ->
+                Text(
+                    text = notes,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptySetsInline(onAddSet: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
         Text(
             text = "No sets yet",
             style = MaterialTheme.typography.titleMedium
@@ -226,7 +307,7 @@ private fun EmptySetsState(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
         FilledTonalButton(onClick = onAddSet) {
             Icon(Icons.Default.Add, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
@@ -355,6 +436,7 @@ private fun SetCard(
 private fun AddEditSetSheet(
     set: WorkoutSet?,
     exercises: List<Exercise>,
+    initialExerciseId: Long? = null,
     onDismiss: () -> Unit,
     onSave: (exerciseId: Long, reps: Int, weight: Double?, rpe: Double?, rir: Int?, notes: String?) -> Unit
 ) {
@@ -375,7 +457,7 @@ private fun AddEditSetSheet(
     var rirError by remember { mutableStateOf<String?>(null) }
     var exerciseError by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(set) {
+    LaunchedEffect(set, initialExerciseId) {
         if (set != null) {
             selectedExercise = exercises.find { it.id == set.exerciseId }
             repsText = set.reps.toString()
@@ -383,6 +465,8 @@ private fun AddEditSetSheet(
             rpeText = set.rpe?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: ""
             rirText = set.rir?.toString() ?: ""
             notesText = set.notes ?: ""
+        } else if (initialExerciseId != null) {
+            selectedExercise = exercises.find { it.id == initialExerciseId }
         }
     }
 
