@@ -20,4 +20,7 @@ interface BodyMeasurementDao {
 
     @Query("SELECT * FROM body_measurements ORDER BY date DESC")
     fun listAll(): Flow<List<BodyMeasurementEntity>>
+
+    @Query("SELECT * FROM body_measurements ORDER BY date DESC, id DESC LIMIT 1")
+    fun getLatest(): Flow<BodyMeasurementEntity?>
 }
