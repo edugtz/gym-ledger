@@ -20,4 +20,7 @@ interface FoodDao {
 
     @Query("SELECT * FROM foods ORDER BY name ASC")
     fun listAll(): Flow<List<FoodEntity>>
+
+    @Query("SELECT * FROM foods WHERE name LIKE '%' || :query || '%' COLLATE NOCASE ORDER BY name COLLATE NOCASE ASC, id DESC")
+    fun searchByName(query: String): Flow<List<FoodEntity>>
 }

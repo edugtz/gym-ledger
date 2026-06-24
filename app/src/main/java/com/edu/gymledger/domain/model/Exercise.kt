@@ -8,6 +8,7 @@ data class Exercise(
     val secondaryMuscles: String?,
     val equipment: String?,
     val notes: String?,
+    val isFavorite: Boolean,
     val createdAt: String,
     val updatedAt: String
 ) {
@@ -20,6 +21,7 @@ data class Exercise(
             secondaryMuscles = secondaryMuscles,
             equipment = equipment,
             notes = notes,
+            isFavorite = isFavorite,
             createdAt = createdAt,
             updatedAt = updatedAt
         )
@@ -35,6 +37,7 @@ data class Exercise(
                 secondaryMuscles = entity.secondaryMuscles,
                 equipment = entity.equipment,
                 notes = entity.notes,
+                isFavorite = entity.isFavorite,
                 createdAt = entity.createdAt,
                 updatedAt = entity.updatedAt
             )
