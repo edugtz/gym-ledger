@@ -188,4 +188,105 @@ class BodyMeasurementRepositoryTest {
         val latest = repository.getLatest().first()
         assertNull(latest)
     }
+
+    @Test
+    fun create_withAllOptionalMeasurements_succeeds() = runTest {
+        val measurement = repository.create(
+            date = "2025-06-20",
+            weight = 75.0,
+            waist = 80.0,
+            chest = 100.0,
+            arm = 35.0,
+            thigh = 55.0,
+            hip = 90.0,
+            notes = "Feeling good"
+        )
+
+        assertTrue(measurement.id > 0)
+        assertEquals(75.0, measurement.weight!!, 0.001)
+        assertEquals(80.0, measurement.waist!!, 0.001)
+        assertEquals(100.0, measurement.chest!!, 0.001)
+        assertEquals(35.0, measurement.arm!!, 0.001)
+        assertEquals(55.0, measurement.thigh!!, 0.001)
+        assertEquals(90.0, measurement.hip!!, 0.001)
+        assertEquals("Feeling good", measurement.notes)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun create_negativeWaist_throws() = runTest {
+        repository.create(date = "2025-06-20", weight = 75.0, waist = -1.0)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun create_negativeChest_throws() = runTest {
+        repository.create(date = "2025-06-20", weight = 75.0, chest = -1.0)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun create_zeroWaist_throws() = runTest {
+        repository.create(date = "2025-06-20", weight = 75.0, waist = 0.0)
+    }
+
+    @Test
+    fun create_blankNotes_becomesNull() = runTest {
+        val measurement = repository.create(
+            date = "2025-06-20",
+            weight = 75.0,
+            notes = "  "
+        )
+        assertNull(measurement.notes)
+    }
+
+    @Test
+    fun create_notesAreTrimmed() = runTest {
+        val measurement = repository.create(
+            date = "2025-06-20",
+            weight = 75.0,
+            notes = "  good day  "
+        )
+        assertEquals("good day", measurement.notes)
+    }
+
+    @Test
+    fun getById_returnsFullMeasurementWithOptionalFields() = runTest {
+        val created = repository.create(
+            date = "2025-06-20",
+            weight = 75.0,
+            waist = 80.0,
+            chest = 100.0,
+            notes = "Test"
+        )
+
+        val found = repository.getById(created.id)
+
+        assertNotNull(found)
+        assertEquals(80.0, found!!.waist!!, 0.001)
+        assertEquals(100.0, found!!.chest!!, 0.001)
+        assertEquals("Test", found!!.notes)
+    }
+
+    @Test
+    fun update_persistsOptionalMeasurements() = runTest {
+        val created = repository.create(date = "2025-06-20", weight = 75.0)
+
+        val updated = repository.update(
+            created.copy(
+                waist = 81.0,
+                chest = 101.0,
+                arm = 36.0,
+                notes = "Updated"
+            )
+        )
+
+        assertEquals(81.0, updated.waist!!, 0.001)
+        assertEquals(101.0, updated.chest!!, 0.001)
+        assertEquals(36.0, updated.arm!!, 0.001)
+        assertEquals("Updated", updated.notes)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun update_invalidOptionalMeasurement_throws() = runTest {
+        val created = repository.create(date = "2025-06-20", weight = 75.0)
+        repository.update(created.copy(waist = 0.0))
+    }
 }

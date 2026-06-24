@@ -18,7 +18,7 @@ interface BodyMeasurementDao {
     @Query("SELECT * FROM body_measurements WHERE id = :id")
     suspend fun getById(id: Long): BodyMeasurementEntity?
 
-    @Query("SELECT * FROM body_measurements ORDER BY date DESC")
+    @Query("SELECT * FROM body_measurements ORDER BY date DESC, id DESC")
     fun listAll(): Flow<List<BodyMeasurementEntity>>
 
     @Query("SELECT * FROM body_measurements ORDER BY date DESC, id DESC LIMIT 1")
