@@ -48,3 +48,9 @@ docs/*.local.md
 .env.*
 *.secret
 *.secrets
+
+# Cloudflare Worker
+worker/food-lookup/.dev.vars
+worker/food-lookup/.wrangler/
+worker/food-lookup/node_modules/
+worker/food-lookup/dist/
