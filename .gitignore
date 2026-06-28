@@ -33,8 +33,18 @@ local.properties
 # OpenCode / local AI noise if generated
 .opencod*/cache/
 
-docs
-# Local AI planning / agent files
-AGENTS.md
-docs/
+# OpenCode / local AI noise if generated
+.opencod*/cache/
 .codex/
+
+# Local-only planning scratch
+AGENTS.local.md
+docs/local/
+docs/_scratch/
+docs/*.local.md
+
+# Secrets / local env files
+.env
+.env.*
+*.secret
+*.secrets
