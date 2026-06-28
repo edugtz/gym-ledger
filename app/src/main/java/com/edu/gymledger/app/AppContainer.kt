@@ -8,6 +8,7 @@ import com.edu.gymledger.data.repository.ExerciseRepository
 import com.edu.gymledger.data.repository.FoodRepository
 import com.edu.gymledger.data.repository.RoutineExerciseRepository
 import com.edu.gymledger.data.repository.RoutineRepository
+import com.edu.gymledger.data.repository.SettingsRepository
 import com.edu.gymledger.data.repository.WorkoutRepository
 import com.edu.gymledger.data.repository.WorkoutSessionExerciseRepository
 
@@ -28,6 +29,8 @@ object AppContainer {
         )
             .fallbackToDestructiveMigration()
             .build()
+
+        settingsRepository = SettingsRepository(context.applicationContext)
     }
 
     val exerciseDao: com.edu.gymledger.data.db.dao.ExerciseDao
@@ -95,4 +98,7 @@ object AppContainer {
             database!!.workoutSessionDao(),
             database!!.exerciseDao()
         )
+
+    lateinit var settingsRepository: SettingsRepository
+        private set
 }
