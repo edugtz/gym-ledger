@@ -1,0 +1,5 @@
+name = "gymledger-food-lookup"
+main = "src/index.ts"
+compatibility_date = "2025-06-25"
+
+[vars]
