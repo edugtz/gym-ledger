@@ -1,303 +1,327 @@
-# Phase 17D — Cloudflare Worker Foundation — Implementation Plan
+# Phase 17E.1 — Worker D1 Cache and Budget Foundation — Implementation Plan
 
-## 1. Objective
+## Objective
 
-Create the backend foundation for GymLedger Food Lookup Gateway using a TypeScript Cloudflare Worker.
+Add the Cloudflare D1 cache and budget foundation for GymLedger Food Lookup Worker.
 
-This phase is backend-only.
+This phase prepares the Worker for safe, low-cost provider integration in later Phase 17E steps.
 
-It creates the Worker skeleton, endpoint conventions, response helpers, error helpers, API key middleware, local dev setup, and README.
+This phase does not call USDA.
 
-This phase must not implement external food providers yet.
+This phase does not call Open Food Facts.
 
----
+This phase does not modify Android.
 
-## 2. Product / Architecture Context
+## Product / Architecture Context
 
-GymLedger is local-first and offline-capable.
-
-The backend exists only to help with online-assisted lookup, cache, normalization, and optional future catalogs.
-
-The backend is not a full SaaS.
-
-Core rule:
+GymLedger remains local-first and offline-capable.
 
 ```text
 Cloud helps discover data.
 Room owns saved data.
 ```
 
-This phase does not store personal user data.
+The Worker is optional online-assisted infrastructure. It may help lookup, normalize, cache, and budget external food data in future phases, but it must not become the source of truth for user meals, workouts, body data, photos, or saved personal data.
 
-This phase does not affect Android behavior.
+The purpose of this phase is to add the backend storage and guardrails needed before any external provider is allowed.
 
----
+## Phase Mapping
 
-## 3. Phase Mapping
-
-This phase maps to:
+This phase implements:
 
 ```text
-Backend Phase B1 — Worker Foundation
-Roadmap Phase 17D — Cloudflare Worker Foundation
+Backend Phase B2 — D1 Cache and Budget Foundation
 ```
 
-Before implementing, confirm the B0 decisions:
+It is the first implementation slice of:
 
 ```text
-Repo location: same repo under worker/food-lookup
-Endpoint strategy: workers.dev first
-Auth strategy: simple personal API key via X-GymLedger-Key
-Cost target: $0/month
-Secrets strategy: no secrets committed
+Phase 17E — Worker Food Providers and Cache
 ```
 
-If any B0 decision is unresolved, report it during preflight.
+Provider work is intentionally deferred.
 
----
+## In Scope
 
-## 4. Scope
+Create or update Worker backend files only.
 
-### In scope
+### D1 Setup
+
+Add Cloudflare D1 support for the Worker:
 
 ```text
-worker/food-lookup project
-TypeScript Worker skeleton
-Wrangler config
-health endpoint
-config endpoint
-JSON success response helper
-JSON error response helper
-stable error codes
-simple API key middleware
-README for setup/dev/deploy
-basic tests if practical
+- D1 database binding in wrangler.toml
+- local/remote migration folder
+- initial migration SQL
 ```
 
-### Out of scope
+The D1 binding should be named:
 
 ```text
-Android app changes
-Gradle changes
-OkHttp
-Retrofit
-USDA
-Open Food Facts
-D1
-KV
-provider cache
-barcode
-Android remote lookup
-food search
-food normalization
-user accounts
-cloud sync
-personal data storage
-photo upload
-paid APIs
-custom domain
+DB
 ```
 
----
-
-## 5. Recommended Project Location
-
-Use:
-
-```text
-worker/food-lookup
-```
-
-Reason:
-
-```text
-Keeping the Worker inside the same repo keeps roadmap/docs/backend contract versioned together.
-The Worker can be split into a separate repo later only if needed.
-```
-
----
-
-## 6. Files to Create
-
-### `worker/food-lookup/package.json`
-
-Purpose:
-
-```text
-Define Worker package scripts and dependencies.
-```
-
-Required scripts:
-
-```json
-{
-  "scripts": {
-    "dev": "wrangler dev",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "deploy": "wrangler deploy"
-  }
-}
-```
-
-Dependencies should be minimal.
-
-Preferred:
-
-```text
-typescript
-wrangler
-vitest
-@cloudflare/workers-types
-```
-
-Do not add frameworks unless justified during preflight.
-
-No Hono in this phase unless the builder provides a strong reason and gets approval.
-
----
-
-### `worker/food-lookup/tsconfig.json`
-
-Purpose:
-
-```text
-TypeScript config for Worker.
-```
-
-Should include Cloudflare Worker types.
-
----
-
-### `worker/food-lookup/vitest.config.ts`
-
-Purpose:
-
-```text
-Test configuration if tests are added.
-```
-
-Keep simple.
-
----
-
-### `worker/food-lookup/wrangler.toml`
-
-Purpose:
-
-```text
-Cloudflare Worker config.
-```
-
-Required:
-
-```text
-name
-main
-compatibility_date
-```
-
-Preferred name:
+Recommended D1 database name:
 
 ```text
 gymledger-food-lookup
 ```
 
-Do not include secrets.
+If Cloudflare creates a different database id, update only `database_id` in `wrangler.toml`.
 
-Do not include production account-specific sensitive values.
+### Tables
 
----
+Add initial schema for:
 
-### `worker/food-lookup/src/index.ts`
+```text
+food_lookup_cache
+usage_daily
+runtime_config
+```
+
+### food_lookup_cache
 
 Purpose:
 
+Cache normalized lookup results returned by future providers.
+
+This table must store normalized Worker DTOs, not raw provider payloads.
+
+Suggested columns:
+
 ```text
-Worker entrypoint and route dispatch.
+cache_key TEXT PRIMARY KEY
+source TEXT NOT NULL
+lookup_type TEXT NOT NULL
+query TEXT NOT NULL
+normalized_json TEXT NOT NULL
+attribution TEXT
+is_approximate INTEGER NOT NULL DEFAULT 1
+created_at TEXT NOT NULL
+updated_at TEXT NOT NULL
+expires_at TEXT NOT NULL
+hit_count INTEGER NOT NULL DEFAULT 0
+last_hit_at TEXT
 ```
 
-Required routes:
+Notes:
+
+```text
+cache_key    = stable key such as generic:egg or barcode:7501000112345
+source       = future values like USDA or OpenFoodFacts
+lookup_type  = generic, search, barcode
+query        = original normalized query/barcode
+```
+
+Do not store personal user data.
+
+Do not store meal logs.
+
+Do not store Android device/user identifiers.
+
+### usage_daily
+
+Purpose:
+
+Track daily Worker/provider usage to prevent accidental cost/rate-limit problems.
+
+Suggested columns:
+
+```text
+usage_date TEXT PRIMARY KEY
+external_calls INTEGER NOT NULL DEFAULT 0
+cache_hits INTEGER NOT NULL DEFAULT 0
+cache_misses INTEGER NOT NULL DEFAULT 0
+blocked_calls INTEGER NOT NULL DEFAULT 0
+last_updated_at TEXT NOT NULL
+```
+
+Notes:
+
+```text
+usage_date = YYYY-MM-DD in UTC
+```
+
+The table should support future logic:
+
+```text
+- increment external_calls before/after provider call
+- increment cache_hits on cache hit
+- increment cache_misses on cache miss
+- increment blocked_calls when budget/safe-mode blocks a call
+```
+
+No provider calls happen in this phase.
+
+### runtime_config
+
+Purpose:
+
+Allow safe operational switches without Android releases.
+
+Suggested columns:
+
+```text
+key TEXT PRIMARY KEY
+value TEXT NOT NULL
+updated_at TEXT NOT NULL
+```
+
+Required default keys:
+
+```text
+safe_mode = true
+online_lookup_enabled = false
+daily_external_call_budget = 25
+```
+
+Meaning:
+
+```text
+safe_mode = true
+  Conservative mode. Future provider calls should be blocked unless a later phase explicitly enables them.
+
+online_lookup_enabled = false
+  Future remote lookup endpoints should not call providers until enabled.
+
+daily_external_call_budget = 25
+  Future cap for external provider calls per UTC day.
+```
+
+This phase may expose these values through `/v1/config` only if they are safe and public.
+
+## Helper Modules
+
+Create small focused modules under:
+
+```text
+worker/food-lookup/src
+```
+
+Recommended files:
+
+```text
+src/db.ts
+src/cache.ts
+src/usage.ts
+src/runtimeConfig.ts
+```
+
+### db.ts
+
+Purpose:
+
+Centralize D1 environment typing and small DB utilities.
+
+Should define or support:
+
+```text
+Env.DB: D1Database
+```
+
+Existing `Env` type in `src/index.ts` may be moved or expanded if cleaner.
+
+### cache.ts
+
+Purpose:
+
+Provide cache helper functions for normalized lookup data.
+
+Suggested functions:
+
+```text
+buildCacheKey(input): string
+getCachedFoodLookup(db, cacheKey, now): Promise<CachedFoodLookup | null>
+putCachedFoodLookup(db, entry): Promise<void>
+```
+
+Behavior:
+
+```text
+- expired cache returns null
+- cache hit increments hit_count and last_hit_at
+- put writes normalized JSON only
+- no raw provider payload is stored
+```
+
+### usage.ts
+
+Purpose:
+
+Provide daily usage/budget helper functions.
+
+Suggested functions:
+
+```text
+getUsageDate(now): string
+getDailyUsage(db, usageDate): Promise<DailyUsage>
+incrementCacheHit(db, usageDate): Promise<void>
+incrementCacheMiss(db, usageDate): Promise<void>
+incrementExternalCall(db, usageDate): Promise<void>
+incrementBlockedCall(db, usageDate): Promise<void>
+isDailyBudgetExceeded(usage, budget): boolean
+```
+
+Behavior:
+
+```text
+- creates row if missing
+- uses UTC date
+- does not call providers
+```
+
+### runtimeConfig.ts
+
+Purpose:
+
+Read safe runtime settings from D1 with conservative fallbacks.
+
+Suggested functions:
+
+```text
+getRuntimeConfig(db): Promise<RuntimeConfig>
+getRuntimeConfigValue(db, key): Promise<string | null>
+```
+
+Fallbacks if D1 config is missing:
+
+```text
+safeMode: true
+onlineLookupEnabled: false
+dailyExternalCallBudget: 25
+```
+
+## Endpoint Changes
+
+Keep existing endpoints:
 
 ```text
 GET /v1/health
 GET /v1/config
 ```
 
-Unknown routes should return stable `not_found` error.
+### GET /v1/health
 
-Unsupported methods should return stable `method_not_allowed` error.
+Keep behavior stable.
 
----
+Do not require D1 for health to return OK unless the implementation explicitly adds a separate D1 diagnostic field.
 
-### `worker/food-lookup/src/response.ts`
-
-Purpose:
-
-```text
-Reusable JSON response helpers.
-```
-
-Suggested success shape:
+Recommended response remains lightweight:
 
 ```json
 {
   "ok": true,
-  "data": {}
-}
-```
-
-Suggested error shape:
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "not_found",
-    "message": "Route not found"
+  "data": {
+    "status": "ok"
   }
 }
 ```
 
----
+### GET /v1/config
 
-### `worker/food-lookup/src/errors.ts`
+Update only if useful and safe.
 
-Purpose:
-
-```text
-Stable error code definitions.
-```
-
-Initial error codes:
-
-```text
-bad_request
-unauthorized
-forbidden
-not_found
-method_not_allowed
-online_lookup_disabled
-provider_disabled
-budget_exceeded
-provider_timeout
-provider_error
-internal_error
-```
-
-Not all codes need to be used in 17D, but they can be defined for contract stability.
-
----
-
-### `worker/food-lookup/src/config.ts`
-
-Purpose:
-
-```text
-Safe public runtime config.
-```
-
-`GET /v1/config` should return only safe values such as:
+Allowed public fields:
 
 ```json
 {
@@ -311,138 +335,131 @@ Safe public runtime config.
     "barcodeLookup": false
   },
   "minQueryLength": 3,
-  "safeMode": true
+  "safeMode": true,
+  "cacheAvailable": true,
+  "budgetEnabled": true
 }
 ```
 
-Important:
+Do not expose secrets.
+
+Do not expose database ids.
+
+Do not expose internal Cloudflare account data.
+
+## Tests
+
+Keep existing tests passing.
+
+Add tests for:
 
 ```text
-Do not return secrets.
-Do not return API keys.
-Do not return internal Cloudflare account details.
+- cache key generation
+- expired cache miss
+- valid cache hit
+- cache write stores normalized JSON
+- UTC usage date
+- daily usage default row behavior
+- budget exceeded behavior
+- runtime config fallback values
+- /v1/config remains safe/public
 ```
 
----
+Tests may use mocked D1 behavior or isolated helper-level tests if full D1 local test setup is too heavy.
 
-### `worker/food-lookup/src/auth.ts`
+Do not make tests depend on external network.
 
-Purpose:
+Do not call Cloudflare remote services during unit tests.
+
+## Files to Create
+
+Expected:
 
 ```text
-Simple API key helper for future protected endpoints.
+worker/food-lookup/migrations/0001_cache_budget_foundation.sql
+worker/food-lookup/src/db.ts
+worker/food-lookup/src/cache.ts
+worker/food-lookup/src/usage.ts
+worker/food-lookup/src/runtimeConfig.ts
 ```
 
-Use header:
+Optional if needed:
 
 ```text
-X-GymLedger-Key
+worker/food-lookup/src/types.ts
+worker/food-lookup/src/cache.test.ts
+worker/food-lookup/src/usage.test.ts
+worker/food-lookup/src/runtimeConfig.test.ts
 ```
 
-Rules:
+## Files to Modify
+
+Expected:
 
 ```text
-Read expected key from Worker environment binding.
-Do not hardcode a real key.
-If no expected key is configured in local dev, allow unprotected health/config or use a documented test key only.
-Do not require auth for /v1/health.
-Do not expose whether a key exists.
+worker/food-lookup/wrangler.toml
+worker/food-lookup/src/index.ts
+worker/food-lookup/src/config.ts
+worker/food-lookup/src/index.test.ts
+worker/food-lookup/README.md
 ```
 
-For this phase, it is acceptable for `/v1/health` and `/v1/config` to be public safe endpoints.
-
-If adding a protected test route, it must be clearly marked dev/test only and not necessary for Android.
-
----
-
-### `worker/food-lookup/src/index.test.ts`
-
-Purpose:
+Optional if required:
 
 ```text
-Basic tests for route behavior.
+worker/food-lookup/src/errors.ts
+worker/food-lookup/package.json
+worker/food-lookup/package-lock.json
 ```
 
-Test cases:
+Only modify `package.json` if a test/dev dependency is truly required.
+
+Prefer avoiding new dependencies.
+
+## Files Not to Touch
+
+Do not modify:
 
 ```text
-GET /v1/health returns ok true
-GET /v1/config returns safe config
-unknown route returns not_found
-unsupported method returns method_not_allowed
-error response shape is stable
+app/src
+build.gradle.kts
+settings.gradle.kts
+gradle/libs.versions.toml
+gradle/
 ```
 
----
+Do not modify Android UI, repositories, Room entities, DataStore, Navigation, or Gradle.
 
-### `worker/food-lookup/README.md`
+Do not modify unrelated docs unless explicitly approved.
 
-Purpose:
+## Out of Scope
+
+Do not implement:
 
 ```text
-Document local setup and usage.
+USDA provider
+Open Food Facts provider
+barcode lookup
+generic provider lookup endpoint
+GET /v1/foods/generic
+GET /v1/foods/search
+GET /v1/foods/barcode/:barcode
+Android remote lookup integration
+OkHttp
+Retrofit
+Android Settings changes
+custom domain
+Cloudflare Access
+user accounts
+cloud sync
+personal data storage
+paid runtime APIs
+external AI runtime APIs
 ```
 
-Must include:
+## Secrets Policy
 
-```text
-What this Worker is
-What this Worker is not
-Local setup
-Validation commands
-Local curl examples
-Secrets policy
-Deployment notes
-Current phase limitations
-Future phases
-```
-
-Must explicitly say:
-
-```text
-No USDA provider yet.
-No Open Food Facts provider yet.
-No D1/KV cache yet.
-No personal data storage.
-No Android integration yet.
-```
-
----
-
-## 7. Files to Modify
-
-Prefer no existing file modifications.
-
-Allowed only if needed:
-
-```text
-.gitignore
-```
-
-Reason:
-
-```text
-Add Worker local secret/env ignores if missing.
-```
-
-If modified, add only:
-
-```gitignore
-worker/food-lookup/.dev.vars
-worker/food-lookup/.wrangler/
-worker/food-lookup/node_modules/
-worker/food-lookup/dist/
-```
-
-Do not re-ignore `docs/` or `AGENTS.md`.
-
-Do not modify Android files.
-
----
-
-## 8. Secrets and Local Env Policy
-
-Never commit:
+Do not commit:
 
 ```text
 .dev.vars
@@ -454,147 +471,60 @@ Open Food Facts credentials
 personal API keys
 ```
 
-For local testing, document:
+This phase should not require production secrets.
 
-```text
-wrangler secret put GYMLEDGER_API_KEY
-```
+If a local D1 database id is generated, do not treat it as a secret, but avoid unnecessary churn in docs.
 
-or `.dev.vars` local usage, but do not commit `.dev.vars`.
+## Implementation Order
 
-Expected env binding name:
+1. Confirm branch and clean state.
+2. Inspect current Worker files.
+3. Update `wrangler.toml` with D1 binding.
+4. Add migration SQL.
+5. Add shared types/helpers.
+6. Add cache helper.
+7. Add usage/budget helper.
+8. Add runtime config helper.
+9. Update config endpoint only with safe public flags if needed.
+10. Add/update tests.
+11. Update Worker README with D1 local setup and migration commands.
+12. Run validation.
+13. Stop for review.
 
-```text
-GYMLEDGER_API_KEY
-```
-
----
-
-## 9. Endpoint Contract
-
-### `GET /v1/health`
-
-Success:
-
-```json
-{
-  "ok": true,
-  "data": {
-    "service": "gymledger-food-lookup",
-    "status": "ok"
-  }
-}
-```
-
-No auth required.
-
-No secrets.
-
----
-
-### `GET /v1/config`
-
-Success:
-
-```json
-{
-  "ok": true,
-  "data": {
-    "onlineLookupAvailable": true,
-    "providers": {
-      "usda": false,
-      "openFoodFacts": false
-    },
-    "features": {
-      "genericFoodSearch": false,
-      "barcodeLookup": false
-    },
-    "minQueryLength": 3,
-    "safeMode": true
-  }
-}
-```
-
-No auth required unless the implementation plan explicitly decides otherwise.
-
-No secrets.
-
----
-
-### Unknown route
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "not_found",
-    "message": "Route not found"
-  }
-}
-```
-
----
-
-### Unsupported method
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "method_not_allowed",
-    "message": "Method not allowed"
-  }
-}
-```
-
----
-
-## 10. Implementation Order
-
-1. Inspect root repo structure.
-2. Confirm `worker/food-lookup` does not already exist.
-3. Confirm `.gitignore` does not already cover Worker local secrets.
-4. Create Worker package files.
-5. Create TypeScript config.
-6. Create Wrangler config.
-7. Create response helpers.
-8. Create error definitions.
-9. Create config helper.
-10. Create auth helper.
-11. Create route dispatch in `index.ts`.
-12. Add tests.
-13. Add README.
-14. Update `.gitignore` only if necessary.
-15. Run validation.
-16. Run manual curl QA.
-17. Report files changed and results.
-
----
-
-## 11. Validation Commands
+## Validation Commands
 
 From repo root:
 
 ```bash
-cd worker/food-lookup
-npm install
-npm run typecheck
-npm test
-npm run dev
+git status --short --untracked-files=all
 ```
 
-Manual curl QA while dev server is running:
+From Worker folder:
 
 ```bash
-curl http://localhost:8787/v1/health
-curl http://localhost:8787/v1/config
-curl http://localhost:8787/unknown
-curl -X POST http://localhost:8787/v1/health
+cd worker/food-lookup
+npm run typecheck
+npm test
 ```
 
----
+D1 local migration validation:
 
-## 12. Quality Gates
+```bash
+npx wrangler d1 migrations list gymledger-food-lookup --local
+npx wrangler d1 migrations apply gymledger-food-lookup --local
+```
+
+If local D1 database has not been created yet, create it manually before applying migrations:
+
+```bash
+npx wrangler d1 create gymledger-food-lookup
+```
+
+Then copy the generated `database_id` into `wrangler.toml`.
+
+Remote migration should not be applied until local tests pass and the user explicitly approves.
+
+## Quality Gates
 
 From repo root:
 
@@ -610,112 +540,73 @@ Android no-touch gate:
 git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
 ```
 
-Expected: no diff.
-
 Provider no-call gate:
 
 ```bash
-grep -R -nE "openfoodfacts|fdc\.nal\.usda|USDA|Open Food Facts" worker/food-lookup/src || true
+grep -R -nE "openfoodfacts|fdc\.nal\.usda|api\.nal\.usda\.gov|world\.openfoodfacts\.org" worker/food-lookup/src || true
 ```
 
-Expected: no provider implementation. Error-code names or comments should avoid provider references in this phase unless clearly contract-only.
-
-Secrets gate:
+Secret no-commit gate:
 
 ```bash
-grep -R -nE "sk-|ghp_|github_pat_|CF_API_TOKEN|CLOUDFLARE_API_TOKEN|USDA_API_KEY|OPENAI_API_KEY|password\s*=" worker/food-lookup || true
+grep -R -nE "secret|token|password|api[_-]?key" worker/food-lookup \
+  --exclude README.md \
+  --exclude package-lock.json \
+  --exclude auth.ts || true
 ```
 
-Expected: no results.
-
-Docs/source-of-truth gate:
+Raw provider payload gate:
 
 ```bash
-grep -R -n "Phase 17D" docs/CURRENT_PHASE.md docs/IMPLEMENTATION_PLAN.md
+grep -R -nE "rawPayload|raw_json|providerPayload|usdaResponse|openFoodFactsResponse" worker/food-lookup/src || true
 ```
 
-Expected: both files mention Phase 17D.
+## Manual QA
 
----
+No Android manual QA required.
 
-## 13. Manual QA Checklist
+Worker manual QA after local validation:
 
-* Worker dev server starts.
-* `/v1/health` returns `ok: true`.
-* `/v1/config` returns `ok: true`.
-* `/v1/config` exposes no secrets.
-* Unknown route returns `not_found`.
-* Unsupported method returns `method_not_allowed`.
-* README commands are accurate.
-* No Android files changed.
-* No provider calls exist.
-* No `.dev.vars`, tokens, or secrets are staged.
-* Cost target remains $0/month.
+```bash
+cd worker/food-lookup
+npm run dev
+```
 
----
+Then in another terminal:
 
-## 14. Risks and Guardrails
+```bash
+curl -i http://localhost:8787/v1/health
+curl -i http://localhost:8787/v1/config
+```
 
-### Risk: Overbuilding backend too early
+Remote deploy is optional at the end of this phase and should happen only after local validation and review.
 
-Mitigation:
+## Acceptance Criteria
+
+Phase 17E.1 is complete when:
 
 ```text
-No providers.
-No D1.
-No KV.
-No barcode.
-No Android integration.
+D1 binding is configured.
+Initial migration exists.
+food_lookup_cache schema exists.
+usage_daily schema exists.
+runtime_config schema exists.
+Cache helpers exist and are tested.
+Usage/budget helpers exist and are tested.
+Runtime config fallback behavior exists and is tested.
+Existing health/config endpoints still pass.
+No provider calls exist.
+No Android files are modified.
+No secrets are committed.
+README documents D1 setup and validation.
+npm run typecheck passes.
+npm test passes.
 ```
 
-### Risk: Secret leakage
-
-Mitigation:
+## Suggested Commit
 
 ```text
-No real keys in repo.
-Use Cloudflare secrets or local .dev.vars ignored by Git.
+feat: add worker cache and budget foundation
 ```
 
-### Risk: Backend contract drift
-
-Mitigation:
-
-```text
-Use stable response shape from the first Worker phase.
-```
-
-### Risk: Modifying Android accidentally
-
-Mitigation:
-
-```text
-Android no-touch gate must show no diff.
-```
-
----
-
-## 15. Builder Preflight Requirements
-
-Before editing, builder must report:
-
-```text
-1. Whether worker/food-lookup already exists.
-2. Whether package manager context is npm/pnpm/yarn.
-3. Files to create.
-4. Files to modify.
-5. Whether .gitignore needs worker additions.
-6. Exact validation commands.
-7. Manual curl QA.
-8. Any blocker.
-```
-
-Builder must stop and wait for approval.
-
----
-
-## 16. Suggested Commit
-
-```text
-feat: add food lookup worker foundation
-```
+The user commits manually.

@@ -1,66 +1,116 @@
-# Phase 17D — Cloudflare Worker Foundation
+# Phase 17E.1 — Worker D1 Cache and Budget Foundation
 
 ## Objective
 
-Create the TypeScript Cloudflare Worker foundation for GymLedger Food Lookup Gateway.
+Add the Cloudflare D1 cache and budget foundation for GymLedger Food Lookup Worker.
 
-This phase creates backend infrastructure only.
+This phase prepares the Worker for safe, low-cost provider integration in later Phase 17E steps.
 
-It does not integrate external food providers yet.
+This phase does not call USDA.
 
-It does not modify Android.
+This phase does not call Open Food Facts.
+
+This phase does not modify Android.
 
 ## Product Quality Goal
 
-GymLedger should have a small, low-cost, serverless backend foundation that can later support online-assisted food lookup through safe, normalized, cacheable endpoints.
+GymLedger should have backend guardrails before any external food provider is introduced.
 
 This phase should establish:
 
-* local Worker development
-* predictable endpoint structure
-* stable JSON response shape
-* stable error response shape
-* simple API key middleware
-* safe public config endpoint
-* README instructions for local dev and deployment
+* D1 database binding
+* local/remote migration structure
+* normalized food lookup cache schema
+* daily usage/budget tracking schema
+* runtime config schema
+* cache helper functions
+* usage/budget helper functions
+* safe-mode / kill-switch foundation
+* tests for cache, usage, budget, and runtime config logic
+* README instructions for D1 setup and validation
 
 ## Recommended AI Route
 
-* Preflight: MiMo V2.5, Devstral 6bit, or Qwen Coder 30B 5bit
-* Builder: Qwen Coder 30B 5bit or OpenCode Go Qwen3.6 Plus
+* Planning: ChatGPT
+* Optional second planning pass: Qwen3.6 35B local or Gemma 4 31B
+* Builder: Qwen Coder 30B 5bit local
+* Alternative builder: OpenCode Go Qwen3.6 Plus
 * Review: ChatGPT with GitHub connector
-* Escalation: DeepSeek Pro only if TypeScript/Wrangler issues become confusing
-* Codex: not needed unless repo/CI becomes broken
+* Debug/review escalation: OpenCode Go DeepSeek V4 Pro
+* Codex: only if D1/Wrangler behavior becomes confusing or repo state becomes broken
+* Gemini: not needed because this phase does not touch Android
+
+## Scope
+
+Implement only Backend Phase B2:
+
+```text
+D1 Cache and Budget Foundation
+```
+
+This is the first implementation slice of Phase 17E.
+
+Provider work is intentionally deferred.
 
 ## Tasks
 
-* Create `worker/food-lookup` TypeScript Cloudflare Worker project.
-* Add package scripts for dev, typecheck, test, and deploy if applicable.
-* Add Wrangler config.
-* Add `GET /v1/health`.
-* Add `GET /v1/config`.
-* Add structured JSON success response helper.
-* Add structured JSON error response helper.
-* Add stable error codes.
-* Add optional API key middleware using `X-GymLedger-Key`.
-* Add README with setup, local dev, secrets, validation, and deploy notes.
-* Keep cost target at $0/month for personal use.
-* Use `workers.dev` as the default endpoint strategy.
+* Add Cloudflare D1 binding to the Worker configuration.
+* Add initial D1 migration folder and SQL migration.
+* Create `food_lookup_cache` table.
+* Create `usage_daily` table.
+* Create `runtime_config` table.
+* Add cache key and cache read/write helpers.
+* Add daily usage tracking helpers.
+* Add budget checking helpers.
+* Add runtime config helpers with conservative fallbacks.
+* Keep `/v1/health` stable.
+* Keep `/v1/config` safe and public.
+* Add or update tests for cache, usage, budget, and runtime config behavior.
+* Update Worker README with D1 local setup, migration, and validation notes.
+
+## D1 Binding
+
+Use this binding name:
+
+```text
+DB
+```
+
+Recommended D1 database name:
+
+```text
+gymledger-food-lookup
+```
+
+If Cloudflare generates a database id, update only the Worker D1 binding config.
+
+Do not commit secrets.
+
+## Tables
+
+Required tables:
+
+```text
+food_lookup_cache
+usage_daily
+runtime_config
+```
 
 ## Do Not Do
 
 * Do not modify Android app code.
-* Do not modify Gradle.
+* Do not modify Android Gradle files.
 * Do not add OkHttp.
 * Do not add Retrofit.
 * Do not call USDA.
 * Do not call Open Food Facts.
-* Do not add D1.
-* Do not add KV.
-* Do not add provider cache.
 * Do not add barcode lookup.
+* Do not add `GET /v1/foods/generic`.
+* Do not add `GET /v1/foods/search`.
+* Do not add `GET /v1/foods/barcode/:barcode`.
 * Do not add Android remote lookup integration.
-* Do not store personal workouts, meals, body measurements, photos, API keys, or secrets.
+* Do not store personal workouts, meals, body measurements, photos, device ids, user ids, API keys, or secrets.
+* Do not store raw provider payloads.
 * Do not require user accounts.
 * Do not require custom domain.
 * Do not add paid provider dependencies.
@@ -69,38 +119,59 @@ This phase should establish:
 
 ## Acceptance Criteria
 
-* `worker/food-lookup` exists.
-* Worker can run locally.
-* `GET /v1/health` returns a stable success response.
-* `GET /v1/config` returns safe public config only.
-* Error responses use a stable shape.
-* Missing/invalid API key behavior is defined and testable.
-* No secrets are committed.
-* No Android files are modified.
+* D1 binding is configured.
+* Initial migration exists.
+* `food_lookup_cache` schema exists.
+* `usage_daily` schema exists.
+* `runtime_config` schema exists.
+* Cache helpers exist and are tested.
+* Usage/budget helpers exist and are tested.
+* Runtime config fallback behavior exists and is tested.
+* Existing `/v1/health` endpoint still passes.
+* Existing `/v1/config` endpoint still passes.
 * No external provider calls exist.
-* No D1/KV/cache exists yet.
-* README explains local setup, validation, and deployment.
-* Cost target remains $0/month.
+* No Android files are modified.
+* No secrets are committed.
+* README documents D1 setup and validation.
+* `npm run typecheck` passes.
+* `npm test` passes.
 
 ## Validation Commands
 
+From repo root:
+
+```bash
+git status --short --untracked-files=all
+```
+
+From Worker folder:
+
 ```bash
 cd worker/food-lookup
-npm install
 npm run typecheck
 npm test
-npm run dev
 ```
 
-Manual curl validation:
+D1 local migration validation:
 
 ```bash
-curl http://localhost:8787/v1/health
-curl http://localhost:8787/v1/config
-curl -H "X-GymLedger-Key: test-key" http://localhost:8787/v1/health
+npx wrangler d1 migrations list gymledger-food-lookup --local
+npx wrangler d1 migrations apply gymledger-food-lookup --local
 ```
 
+If the D1 database has not been created yet:
+
+```bash
+npx wrangler d1 create gymledger-food-lookup
+```
+
+Then copy the generated `database_id` into `worker/food-lookup/wrangler.toml`.
+
+Remote migration should not be applied until local validation passes and the user explicitly approves.
+
 ## Quality Gates
+
+From repo root:
 
 ```bash
 git diff --name-status
@@ -117,31 +188,40 @@ git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.to
 Provider no-call gate:
 
 ```bash
-grep -R -nE "openfoodfacts|fdc\.nal\.usda|USDA|Open Food Facts" worker/food-lookup/src || true
+grep -R -nE "openfoodfacts|fdc\.nal\.usda|api\.nal\.usda\.gov|world\.openfoodfacts\.org" worker/food-lookup/src || true
 ```
 
-Secrets gate:
+Secret no-commit gate:
 
 ```bash
-grep -R -nE "api[_-]?key|secret|token|password" worker/food-lookup --exclude README.md || true
+grep -R -nE "secret|token|password|api[_-]?key" worker/food-lookup \
+  --exclude README.md \
+  --exclude package-lock.json \
+  --exclude auth.ts || true
 ```
 
-Expected: no real secrets. Placeholder names in env typings/config docs are acceptable.
+Raw provider payload gate:
 
-## Manual QA Checklist
-
-* Start Worker locally.
-* Open `/v1/health`.
-* Open `/v1/config`.
-* Test unknown route.
-* Test missing API key behavior if middleware is enabled for protected routes.
-* Confirm safe config does not expose secrets.
-* Confirm README commands work.
-* Confirm no Android files changed.
-* Confirm no provider URLs or calls exist.
-
-## Suggested Commit
-
-```text
-feat: add food lookup worker foundation
+```bash
+grep -R -nE "rawPayload|raw_json|providerPayload|usdaResponse|openFoodFactsResponse" worker/food-lookup/src || true
 ```
+
+## Manual QA
+
+No Android manual QA is required.
+
+Worker local manual QA:
+
+```bash
+cd worker/food-lookup
+npm run dev
+```
+
+Then in another terminal:
+
+```bash
+curl -i http://localhost:8787/v1/health
+curl -i http://localhost:8787/v1/config
+```
+
+Remote deploy is optional at the end of this phase and should happen only after local validation and review.
