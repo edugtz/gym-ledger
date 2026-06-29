@@ -2,7 +2,7 @@
 
 Cloudflare Worker foundation for GymLedger online-assisted food lookup.
 
-Phase 17D only — foundation and safe public endpoints.
+Phase 17E.1 — D1 Cache and Budget Foundation.
 
 ## Status
 
@@ -10,7 +10,7 @@ No USDA provider yet.
 
 No Open Food Facts provider yet.
 
-No D1/KV cache yet.
+D1 cache and budget foundation implemented.
 
 No personal data storage.
 
@@ -32,6 +32,28 @@ cd worker/food-lookup
 npm install
 ```
 
+## D1 Database Setup
+
+To set up the local D1 database for development:
+
+1. Create the database:
+```bash
+npx wrangler d1 create gymledger-food-lookup
+```
+
+2. Copy the generated `database_id` into `wrangler.toml`:
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "gymledger-food-lookup"
+database_id = "<YOUR_DATABASE_ID_HERE>"
+```
+
+3. Run the initial migration:
+```bash
+npx wrangler d1 migrations apply gymledger-food-lookup --local
+```
+
 ## Local Dev
 
 ```bash
@@ -45,6 +67,12 @@ Worker starts at `http://localhost:8787`.
 ```bash
 npm run typecheck
 npm test
+```
+
+D1 local migration validation:
+```bash
+npx wrangler d1 migrations list gymledger-food-lookup --local
+npx wrangler d1 migrations apply gymledger-food-lookup --local
 ```
 
 ## Manual Curl Check

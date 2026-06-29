@@ -21,9 +21,14 @@ function makeRequest(
   return new Request(`http://localhost:8787${path}`, { method, headers });
 }
 
+// Mock environment with DB binding
+const mockEnv = {
+  DB: {} as D1Database,
+};
+
 describe("GET /v1/health", () => {
   it("returns ok true with status", async () => {
-    const res = await worker.fetch(makeRequest("/v1/health"), {});
+    const res = await worker.fetch(makeRequest("/v1/health"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(200);
@@ -32,7 +37,7 @@ describe("GET /v1/health", () => {
   });
 
   it("returns method_not_allowed for POST", async () => {
-    const res = await worker.fetch(makeRequest("/v1/health", "POST"), {});
+    const res = await worker.fetch(makeRequest("/v1/health", "POST"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(405);
@@ -43,7 +48,7 @@ describe("GET /v1/health", () => {
 
 describe("GET /v1/config", () => {
   it("returns safe public config", async () => {
-    const res = await worker.fetch(makeRequest("/v1/config"), {});
+    const res = await worker.fetch(makeRequest("/v1/config"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(200);
@@ -66,7 +71,7 @@ describe("GET /v1/config", () => {
   });
 
   it("returns method_not_allowed for POST", async () => {
-    const res = await worker.fetch(makeRequest("/v1/config", "POST"), {});
+    const res = await worker.fetch(makeRequest("/v1/config", "POST"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(405);
@@ -77,7 +82,7 @@ describe("GET /v1/config", () => {
 
 describe("unknown routes", () => {
   it("returns not_found", async () => {
-    const res = await worker.fetch(makeRequest("/unknown"), {});
+    const res = await worker.fetch(makeRequest("/unknown"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(404);
@@ -86,7 +91,7 @@ describe("unknown routes", () => {
   });
 
   it("returns not_found for nested unknown routes", async () => {
-    const res = await worker.fetch(makeRequest("/v1/unknown"), {});
+    const res = await worker.fetch(makeRequest("/v1/unknown"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(404);
@@ -97,7 +102,7 @@ describe("unknown routes", () => {
 
 describe("response shape", () => {
   it("success responses have { ok: true, data }", async () => {
-    const res = await worker.fetch(makeRequest("/v1/health"), {});
+    const res = await worker.fetch(makeRequest("/v1/health"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(body).toHaveProperty("ok", true);
@@ -106,7 +111,7 @@ describe("response shape", () => {
   });
 
   it("error responses have { ok: false, error: { code, message } }", async () => {
-    const res = await worker.fetch(makeRequest("/nope"), {});
+    const res = await worker.fetch(makeRequest("/nope"), mockEnv);
     const body = (await res.json()) as ResponseBody;
 
     expect(body).toHaveProperty("ok", false);

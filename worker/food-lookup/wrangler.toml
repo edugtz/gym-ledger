@@ -3,3 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2025-06-25"
 workers_dev = true
 [vars]
+[[d1_databases]]
+binding = "DB" # i.e. available in your Worker on env.DB
+database_name = "gymledger-food-lookup"
+database_id = "54e39a08-a212-4d36-9ade-b836f72d6d47"

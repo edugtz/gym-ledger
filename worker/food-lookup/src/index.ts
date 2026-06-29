@@ -1,7 +1,8 @@
 import { PUBLIC_CONFIG } from "./config";
 import { success, error } from "./response";
+import { Env as DBEnv } from "./db";
 
-export interface Env {
+export interface Env extends DBEnv {
   GYMLEDGER_API_KEY?: string;
 }
 
