@@ -37,6 +37,15 @@ Before editing, list:
 
 Wait for approval before editing.
 
+## Phase and Branch Workflow
+
+- Every new phase starts from a new branch off `dev`.
+- Never commit directly to `dev`.
+- Use this flow: branch -> changes -> push -> ChatGPT GitHub review -> merge to `dev` only after PASS.
+- If ChatGPT is the planner, ChatGPT must provide final `docs/CURRENT_PHASE.md` and `docs/IMPLEMENTATION_PLAN.md` directly.
+- Do not ask the user to run a planning prompt back through ChatGPT when ChatGPT is already doing the planning.
+- Prompts are only needed for second-pass planning, builder preflight, implementation, review, or debug.
+
 ## Hard Rules
 
 - Implement only the active phase.

@@ -1068,6 +1068,13 @@ Preflight tasks:
 16. Identify risks, blockers, or mismatches between docs and actual code.
 17. Stop and wait for approval before editing.
 
+Phase workflow rule:
+- Every new phase starts from a new branch off dev.
+- Never commit directly to dev.
+- Flow: branch -> changes -> push -> ChatGPT GitHub review -> merge to dev only after PASS.
+- If ChatGPT is the planner, ChatGPT must provide final CURRENT_PHASE.md / IMPLEMENTATION_PLAN.md directly.
+- Do not give a planning prompt back to the user unless another model will do second-pass planning.
+- Prompts are only needed for second-pass planning, builder preflight, implementation, review, or debug.
 Hard rules:
 
 * Do not edit files during this preflight.
