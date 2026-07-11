@@ -1,211 +1,436 @@
-# Phase 17E.2 Implementation Plan — USDA Generic Food Lookup Provider
+# Phase 17E.3 Implementation Plan — Open Food Facts Barcode Lookup Provider
 
 ## 1. Goal
 
-Implement the USDA generic-food provider slice of Phase 17E.
+Implement packaged-food barcode lookup through Open Food Facts.
 
-The Worker will add:
+Required endpoint:
 
 ```text
-GET /v1/foods/generic?q=<query>
+GET /v1/foods/barcode/:barcode
 ```
 
 The endpoint will:
 
-1. validate and normalize the query
-2. check D1 cache
-3. return a valid normalized cache hit immediately
-4. evaluate safe-mode, provider, and budget gates on cache miss
-5. call USDA only when allowed
-6. normalize provider results into a Worker-owned DTO
-7. cache only normalized DTOs
-8. return stable errors without exposing provider internals
+1. parse and validate the barcode path segment
+2. build a stable cache key
+3. check D1 cache
+4. return a valid cache hit immediately
+5. evaluate runtime, feature, and budget gates on cache miss
+6. validate Open Food Facts provider configuration
+7. call Open Food Facts once with an explicit timeout
+8. normalize the product into a Worker-owned DTO
+9. cache only the normalized DTO
+10. return stable errors without exposing provider internals
 
 No Android work is included.
 
-No Open Food Facts work is included.
+No full-text product search is included.
 
-## 2. Existing Foundation to Reuse
+No provider writes are included.
 
-Phase 17E.1 already provides:
+## 2. Source of Truth
 
-```text
-worker/food-lookup/src/db.ts
-worker/food-lookup/src/cache.ts
-worker/food-lookup/src/usage.ts
-worker/food-lookup/src/runtimeConfig.ts
-worker/food-lookup/migrations/0001_cache_budget_foundation.sql
-```
-
-Existing tables:
+Read before editing:
 
 ```text
-food_lookup_cache
-usage_daily
-runtime_config
-```
-
-Existing runtime keys:
-
-```text
-safe_mode
-online_lookup_enabled
-usda_provider_enabled
-open_food_facts_provider_enabled
-generic_food_search_enabled
-barcode_lookup_enabled
-daily_external_call_budget
-cache_enabled
-cache_ttl_seconds
-```
-
-Do not create duplicate cache, usage, or runtime-config systems.
-
-## 3. Implementation Strategy
-
-Recommended request flow:
-
-```text
-request
-  -> route/method validation
-  -> query validation and normalization
-  -> cache key generation
-  -> cache read
-  -> valid cache hit?
-       yes:
-         increment cache entry hit count
-         increment usage cache_hits
-         return normalized cached response
-       no:
-         increment usage cache_misses
-         evaluate runtime gates
-         evaluate provider configuration
-         evaluate daily budget
-         call USDA with timeout
-         increment external_calls
-         normalize results
-         validate normalized response
-         cache normalized response
-         return normalized response
-```
-
-Do not place all logic directly inside `index.ts`.
-
-Keep route orchestration small.
-
-## 4. Proposed File Structure
-
-Create:
-
-```text
-worker/food-lookup/src/types/foodLookup.ts
-worker/food-lookup/src/providers/usda.ts
-worker/food-lookup/src/providers/usda.test.ts
-worker/food-lookup/src/normalizers/usdaFood.ts
-worker/food-lookup/src/normalizers/usdaFood.test.ts
-worker/food-lookup/src/services/genericFoodLookup.ts
-worker/food-lookup/src/services/genericFoodLookup.test.ts
-```
-
-Modify as needed:
-
-```text
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/index.test.ts
-worker/food-lookup/src/cache.ts
-worker/food-lookup/src/cache.test.ts
-worker/food-lookup/src/usage.ts
-worker/food-lookup/src/usage.test.ts
-worker/food-lookup/src/runtimeConfig.ts
-worker/food-lookup/src/runtimeConfig.test.ts
-worker/food-lookup/src/errors.ts
-worker/food-lookup/src/config.ts
+AGENTS.md
+AI_WORKFLOW.md
+docs/CURRENT_PHASE.md
+docs/IMPLEMENTATION_PLAN.md
+docs/BACKEND_PHASE_GUIDE.md
 worker/food-lookup/README.md
 ```
 
-Do not create every proposed file blindly.
+Inspect all existing Worker source and tests before choosing exact files.
 
-The builder must inspect the existing code and choose the smallest coherent structure.
+Phase 17E.1 and 17E.2 foundations must be reused.
 
-## 5. Environment Contract
+## 3. Existing Architecture
 
-Extend the Worker environment with:
+Current Worker patterns include:
 
-```ts
-USDA_API_KEY?: string;
+```text
+src/index.ts
+src/errors.ts
+src/response.ts
+src/config.ts
+src/db.ts
+src/auth.ts
+src/cache.ts
+src/usage.ts
+src/runtimeConfig.ts
+src/types/foodLookup.ts
+src/providers/usda.ts
+src/normalizers/usdaFood.ts
+src/services/genericFoodLookup.ts
 ```
 
-Existing D1 binding remains:
+Existing behavior that must remain stable:
+
+```text
+GET /v1/health
+GET /v1/config
+GET /v1/foods/generic?q=<query>
+```
+
+Do not regress USDA behavior.
+
+## 4. Proposed Structure
+
+Likely files to create:
+
+```text
+src/barcode.ts
+src/barcode.test.ts
+src/types/packagedFoodLookup.ts
+src/types/packagedFoodLookup.test.ts
+src/providers/openFoodFacts.ts
+src/providers/openFoodFacts.test.ts
+src/normalizers/openFoodFactsProduct.ts
+src/normalizers/openFoodFactsProduct.test.ts
+src/services/barcodeFoodLookup.ts
+src/services/barcodeFoodLookup.test.ts
+```
+
+Likely files to modify:
+
+```text
+src/index.ts
+src/index.test.ts
+src/errors.ts
+src/runtimeConfig.ts
+src/runtimeConfig.test.ts
+README.md
+```
+
+Possible reuse-only files:
+
+```text
+src/cache.ts
+src/cache.test.ts
+src/usage.ts
+src/usage.test.ts
+```
+
+Do not create all proposed files blindly.
+
+Preflight must confirm the smallest coherent structure.
+
+## 5. Request Flow
+
+Required flow:
+
+```text
+incoming request
+  -> match /v1/foods/barcode/:barcode
+  -> reject unsupported method
+  -> decode path segment
+  -> validate barcode
+  -> build cache key
+  -> read cache when enabled
+  -> valid cache hit?
+       yes:
+         increment cache entry hit
+         increment daily cache_hits
+         return cached DTO
+       no:
+         increment daily cache_misses
+         read runtime configuration
+         safe mode enabled?
+           block
+         online lookup disabled?
+           block
+         OFF provider disabled?
+           block
+         barcode lookup disabled?
+           block
+         daily budget exhausted?
+           block
+         missing User-Agent?
+           configuration error
+         increment external_calls
+         call OFF once with timeout
+         validate provider response
+         normalize product
+         cache normalized DTO
+         return response
+```
+
+Validation failures occur before cache and usage counters.
+
+## 6. Barcode Utility
+
+Create a pure barcode utility.
+
+Suggested interface:
 
 ```ts
-DB: D1Database;
+export interface BarcodeValidationSuccess {
+  ok: true;
+  barcode: string;
+}
+
+export interface BarcodeValidationFailure {
+  ok: false;
+}
+
+export function normalizeAndValidateBarcode(
+  raw: string
+): BarcodeValidationSuccess | BarcodeValidationFailure;
 ```
+
+Required behavior:
+
+```text
+trim
+preserve leading zeroes
+digits only
+allowed lengths: 8, 12, 13, 14
+return string
+```
+
+Do not use:
+
+```ts
+Number(barcode)
+parseInt(barcode)
+BigInt(barcode)
+```
+
+The DTO, cache key, route, and provider URL all use a string.
+
+Do not silently pad or truncate.
+
+Do not calculate or reject by checksum unless explicitly approved after discovery.
+
+## 7. Environment Contract
+
+Extend the Worker environment:
+
+```ts
+OPEN_FOOD_FACTS_USER_AGENT?: string;
+```
+
+No Open Food Facts API key is needed for product reads.
 
 Rules:
 
-* `USDA_API_KEY` is optional at TypeScript compile time.
-* Provider execution requires it at runtime.
-* Missing key returns `configuration_error`.
-* Do not add the key to `wrangler.toml`.
-* Do not add the key to `[vars]`.
-* Use `.dev.vars` locally.
-* Use `wrangler secret put USDA_API_KEY` for deployed environments.
-* Do not commit `.dev.vars`.
+* missing User-Agent returns `configuration_error` only after cache miss and provider gates pass
+* do not add personal contact information to source
+* do not place a real contact email in README examples
+* use `.dev.vars` locally
+* do not commit `.dev.vars`
+* future deployment may use `wrangler secret put` or approved environment configuration
 
-## 6. Query Normalization
+Existing environment values remain intact:
 
-Create one reusable query normalizer.
-
-Required normalization:
-
-```text
-trim surrounding whitespace
-collapse repeated internal whitespace
-lowercase for cache key
-preserve a clean display query for response
+```ts
+DB: D1Database;
+GYMLEDGER_API_KEY?: string;
+USDA_API_KEY?: string;
 ```
 
-Example:
+## 8. Provider Client
 
-```text
-input:  "  Chicken   Breast "
-display query: "Chicken Breast"
-cache query: "chicken breast"
-cache key: "usda:generic:chicken breast"
-```
-
-Do not:
-
-* strip meaningful punctuation indiscriminately
-* accept empty normalized queries
-* accept queries shorter than `minQueryLength`
-* allow client-supplied USDA filters
-* allow client-supplied result limits above the internal fixed limit
-
-## 7. DTO Contract
-
-Define Worker-owned TypeScript types.
+Create a dedicated Open Food Facts provider client.
 
 Suggested types:
 
 ```ts
-export interface GenericFoodLookupResponse {
-  query: string;
-  source: "USDA";
-  attribution: string;
+export interface OpenFoodFactsProviderConfig {
+  baseUrl: string;
+  userAgent: string;
+  timeoutMs: number;
+}
+
+export type OpenFoodFactsProviderResult =
+  | { kind: "success"; payload: unknown }
+  | { kind: "not_found" }
+  | { kind: "timeout" }
+  | { kind: "rate_limited" }
+  | { kind: "unavailable" }
+  | { kind: "error" }
+  | { kind: "unexpected"; detail: string };
+```
+
+Prefer returning validated minimal provider data or an unknown payload passed directly to a pure normalizer.
+
+The provider must not:
+
+* build the public response envelope
+* write to D1
+* update counters
+* log payloads
+* retry repeatedly
+* download images
+* perform search requests
+
+## 9. Provider URL
+
+Production base:
+
+```text
+https://world.openfoodfacts.org
+```
+
+Current endpoint:
+
+```text
+/api/v3.6/product/<barcode>.json
+```
+
+Build the URL with `URL`.
+
+Encode the barcode path safely.
+
+Because validated barcodes are digits only, path encoding should be straightforward, but still avoid manual untrusted URL concatenation where practical.
+
+Potential field selection may include only values needed for:
+
+```text
+code
+product_name
+generic_name
+brands
+brands_tags
+quantity
+serving_size
+nutriments
+```
+
+The exact current v3 field-selection syntax must be verified during preflight.
+
+Do not assume v2 query parameters work unchanged in v3.
+
+If reliable v3 field selection is uncertain, fetch the single product response without broadening to additional requests, then normalize and discard unused fields.
+
+## 10. Required Headers
+
+Provider request must include:
+
+```http
+User-Agent: <configured value>
+Accept: application/json
+```
+
+No authentication header is required for read-only product lookup.
+
+Do not include:
+
+```text
+Authorization
+Api-Key
+cookies
+user credentials
+```
+
+Tests must verify:
+
+* custom User-Agent is present
+* Accept header is present
+* no write credentials exist
+* request method is GET
+* body is absent
+
+## 11. Timeout
+
+Use `AbortController`.
+
+Default:
+
+```text
+5000 ms
+```
+
+Make timeout injectable through provider config.
+
+Clear timeout after both success and failure.
+
+Map only an abort caused by timeout to:
+
+```text
+timeout
+```
+
+Other fetch failures map to:
+
+```text
+error
+```
+
+## 12. HTTP Mapping
+
+Suggested provider mapping:
+
+```text
+200 -> parse and validate response
+404 -> not_found
+429 -> rate_limited
+500–599 -> unavailable
+other non-2xx -> error
+invalid JSON -> unexpected
+invalid top-level shape -> unexpected
+```
+
+Open Food Facts may return a successful HTTP response containing a status field indicating product absence.
+
+The implementation must inspect current response semantics.
+
+Required distinction:
+
+```text
+valid provider not-found response -> not_found
+invalid provider response -> unexpected/provider_error
+```
+
+Do not treat malformed payload as an unknown barcode.
+
+## 13. Provider Shape Validation
+
+Treat response JSON as `unknown`.
+
+Validate at minimum:
+
+* top-level non-null object
+* not an array
+* recognized status/result semantics
+* product field is an object for success
+* product code/barcode is compatible with the request where supplied
+
+A valid not-found payload may omit `product`.
+
+A successful payload without a usable product object is `unexpected`, not `not_found`, unless current official semantics explicitly identify it as not found.
+
+Provider detail strings must not be returned publicly.
+
+## 14. Worker DTO
+
+Create Worker-owned types.
+
+Suggested contract:
+
+```ts
+export interface PackagedFoodLookupResponse {
+  barcode: string;
+  source: "OPEN_FOOD_FACTS";
+  attribution: "Open Food Facts — ODbL";
   isApproximate: true;
-  results: GenericFoodResult[];
+  product: PackagedFoodProduct;
 }
 
-export interface GenericFoodResult {
+export interface PackagedFoodProduct {
   externalId: string;
-  name: string;
-  description: string;
-  dataType: string;
-  nutritionPer100g: NutritionPer100g;
+  name: string | null;
+  genericName: string | null;
+  brands: string[];
+  quantity: string | null;
+  servingSize: string | null;
+  nutritionPer100g: NutritionValues;
+  nutritionPerServing: NutritionValues;
 }
 
-export interface NutritionPer100g {
+export interface NutritionValues {
   caloriesKcal: number | null;
   proteinG: number | null;
   carbohydrateG: number | null;
@@ -213,315 +438,265 @@ export interface NutritionPer100g {
 }
 ```
 
-Optional internal fields must not leak into the public response unless approved.
+Reuse `NutritionPer100g` from the USDA DTO only if it remains semantically clean.
 
-Do not expose:
+Do not couple packaged-food DTO naming to USDA-specific types if that makes future Android contract confusing.
 
-```text
-foodNutrients
-foodMeasures
-marketCountry
-publicationDate
-modifiedDate
-dataSource
-scientificName
-raw response payload
-API metadata unrelated to Android
-```
+## 15. Cached DTO Guard
 
-## 8. USDA Provider Client
-
-Create a small provider client.
-
-Suggested interface:
+Add:
 
 ```ts
-export interface UsdaSearchOptions {
-  query: string;
-  pageSize: number;
-  signal: AbortSignal;
-}
-
-export interface UsdaProviderClient {
-  searchGenericFoods(
-    options: UsdaSearchOptions
-  ): Promise<unknown>;
-}
+isPackagedFoodLookupResponse(
+  value: unknown
+): value is PackagedFoodLookupResponse
 ```
 
-A concrete implementation may receive:
+Validate:
 
-```ts
-apiKey
-fetch implementation
-base URL
-```
+* root object, not array
+* barcode string matching supported barcode format
+* source exactly `OPEN_FOOD_FACTS`
+* attribution non-empty string
+* `isApproximate === true`
+* product object
+* `externalId` string
+* nullable name/genericName/quantity/servingSize
+* brands array of strings
+* nutrition objects
+* every nutrient is finite number or null
 
-through dependency injection.
+Reject:
 
-This enables deterministic tests without live network calls.
+* NaN
+* Infinity
+* missing required keys
+* wrong source
+* malformed brands
+* malformed nutrition
+* arrays as root/product/nutrition
 
-Recommended provider request:
+Cached invalid data behaves as a cache miss.
 
-```text
-POST https://api.nal.usda.gov/fdc/v1/foods/search?api_key=<secret>
-```
-
-Suggested controlled body:
-
-```json
-{
-  "query": "egg",
-  "pageSize": 10,
-  "dataType": [
-    "Foundation",
-    "SR Legacy",
-    "Survey (FNDDS)"
-  ]
-}
-```
-
-The exact accepted USDA data-type labels must be verified against provider behavior before finalizing.
-
-Do not include `Branded` in the default generic-food search unless a later product decision approves it.
-
-Provider client responsibilities:
-
-* build URL safely
-* include API key
-* use POST JSON
-* accept an AbortSignal
-* use fixed page size
-* map HTTP status to internal provider errors
-* parse JSON once
-* validate minimum response shape
-* return provider data only to the normalizer/service layer
-
-Provider client must not:
-
-* return a public `Response`
-* build GymLedger API response envelopes
-* write to D1
-* update usage counters
-* log raw response payloads
-* retry repeatedly
-
-## 9. Timeout
-
-Use `AbortController`.
-
-Recommended timeout:
-
-```text
-5 seconds
-```
-
-Keep timeout in a named constant.
-
-Tests should use a shorter injected timeout or mocked fetch rather than waiting five real seconds.
-
-Map aborts caused by the timeout to:
-
-```text
-provider_timeout
-```
-
-Do not map unrelated runtime errors to timeout.
-
-## 10. Provider Error Mapping
-
-Internal provider result/error categories:
-
-```text
-timeout
-rate_limited
-unavailable
-invalid_response
-unexpected_error
-```
-
-Public mapping:
-
-```text
-timeout -> provider_timeout
-HTTP 429 -> provider_rate_limited
-HTTP 500-599 -> provider_unavailable
-invalid JSON/shape -> provider_error
-other network/provider exception -> provider_error
-```
-
-Do not return provider status text or raw body.
-
-A provider `404` is not expected for search and should not be treated as a valid empty search result automatically.
-
-A valid `200` response with no usable normalized results maps to:
-
-```text
-not_found
-```
-
-## 11. USDA Response Parsing
-
-Treat USDA response payload as unknown at the provider boundary.
-
-Add narrow runtime guards.
-
-Minimum expected search response:
-
-```text
-foods: array
-```
-
-Minimum usable food item:
-
-```text
-fdcId
-description
-foodNutrients
-```
-
-Skip malformed individual results when possible.
-
-Reject the entire provider response only if the top-level shape is unusable.
-
-Limit the normalized result count after filtering malformed entries.
-
-## 12. Nutrient Normalization
+## 16. Product Normalizer
 
 Create a pure normalizer.
 
 Input:
 
 ```text
-unknown USDA food item
+unknown Open Food Facts product
 ```
 
 Output:
 
 ```text
-GenericFoodResult | null
+PackagedFoodProduct | null
 ```
 
-The normalizer must not access:
+No access to:
 
-* D1
-* environment variables
+* environment
 * fetch
+* D1
+* counters
 * runtime config
-* usage counters
+* response helpers
 
-Nutrient targets:
+Normalize only approved fields.
 
-```text
-Energy kcal
-Protein g
-Carbohydrate by difference g
-Total lipid/fat g
-```
+## 17. Product Identity
 
-Prefer stable identifiers.
-
-Suggested internal matching priority:
-
-1. stable nutrient number or provider nutrient ID
-2. exact normalized nutrient name fallback
-3. no value
-
-Energy rules:
-
-* Prefer kcal directly.
-* If only kJ is available and conversion is implemented:
-
-    * centralize conversion
-    * test it
-    * round predictably
-* Do not use kJ directly as kcal.
-
-Value rules:
-
-* Preserve valid zero values.
-* Reject NaN and non-finite numbers.
-* Return `null` for unavailable values.
-* Do not turn missing values into zero.
-* Do not infer nutrients from unrelated nutrient fields.
-
-Name rules:
+Required:
 
 ```text
-name = provider description
-description = provider description
+externalId = normalized barcode string
 ```
 
-A later phase may refine display names.
+Prefer provider `code` only when it matches or normalizes consistently with the requested barcode.
 
-## 13. Per-100-g Contract
+Do not replace the requested barcode with a numeric form.
 
-The public DTO explicitly means:
+If provider code conflicts materially with requested barcode:
+
+* stop and classify as unexpected provider response
+* do not silently return a different product
+
+## 18. Name Normalization
+
+Suggested provider field priority:
 
 ```text
-nutritionPer100g
+localized product name
+product_name
+generic_name
+null
 ```
 
-Only include USDA results whose nutrient basis can reasonably be treated as per 100 g under the selected USDA search response contract.
+Exact localization field behavior must be discovered.
+
+Avoid broad language logic in this phase.
 
 Do not:
 
-* convert serving data without a reliable weight
-* assume one serving equals 100 g
-* combine portion and per-100-g values
-* use branded household serving values in this generic endpoint
+* invent a name
+* use barcode as name
+* concatenate brand into name automatically
+* expose an empty string as a meaningful name
 
-Document any USDA data-type assumptions in code comments and README.
+Trim strings.
 
-## 14. Attribution
+Convert empty strings to `null`.
 
-Required public values:
+## 19. Brand Normalization
+
+Output:
 
 ```ts
-source: "USDA"
-attribution: "USDA FoodData Central"
+string[]
+```
+
+Priority:
+
+1. readable structured provider values
+2. provider brand text fallback
+
+Rules:
+
+* trim
+* remove empties
+* deduplicate
+* preserve readable casing
+* avoid taxonomy prefixes
+* do not split on ambiguous punctuation beyond comma unless documented
+
+## 20. Quantity and Serving Size
+
+Normalize strings:
+
+```text
+quantity
+serving_size
+```
+
+Rules:
+
+* trim
+* empty becomes null
+* no unit conversion in this phase
+* no package-size parsing
+* no serving-weight derivation from arbitrary text
+
+## 21. Nutrition Normalization
+
+Per 100 g:
+
+```text
+energy-kcal_100g
+proteins_100g
+carbohydrates_100g
+fat_100g
+```
+
+Per serving:
+
+```text
+energy-kcal_serving
+proteins_serving
+carbohydrates_serving
+fat_serving
+```
+
+Output names:
+
+```text
+caloriesKcal
+proteinG
+carbohydrateG
+fatG
+```
+
+Value rules:
+
+* finite number -> preserve
+* zero -> preserve
+* numeric string -> only parse if official provider schema/current payload requires it and tests cover it
+* missing -> null
+* NaN/infinite -> null
+* negative nutrients -> preferably null unless the provider contract identifies a valid reason
+* do not invent missing values
+
+Energy fallback:
+
+```text
+energy-kcal_* preferred
+```
+
+Do not use `energy_*` kJ as kcal.
+
+A kJ-to-kcal conversion is optional only when:
+
+* kcal is absent
+* unit is proven to be kJ
+* conversion is centralized
+* conversion is tested
+
+## 22. Attribution
+
+Required response values:
+
+```ts
+source: "OPEN_FOOD_FACTS"
+attribution: "Open Food Facts — ODbL"
 isApproximate: true
 ```
 
-Do not imply that USDA endorses GymLedger.
+Cached data must retain attribution.
 
-Do not omit attribution from cached responses.
+Do not imply Open Food Facts endorsement.
 
-The cached normalized JSON must retain attribution.
+README must document:
 
-## 15. Cache Integration
+* community-maintained data
+* possible incompleteness
+* Open Database License attribution
+* user review/editability in future Android phase
 
-Extend or use the existing cache helpers.
+## 23. Service Orchestration
+
+Create:
+
+```text
+src/services/barcodeFoodLookup.ts
+```
+
+Suggested inputs:
+
+```ts
+export interface BarcodeFoodLookupDeps {
+  env: WorkerEnv;
+  barcode: string;
+  today: string;
+}
+```
+
+Prefer dependency injection or small internal interfaces for:
+
+* provider client
+* clock where necessary
+* timeout configuration
+
+Do not introduce a DI framework.
+
+## 24. Cache Integration
 
 Cache key:
 
 ```text
-usda:generic:<normalized-query>
+open_food_facts:barcode:<barcode>
 ```
 
-Lookup type:
-
-```text
-generic
-```
-
-Source:
-
-```text
-usda
-```
-
-Recommended TTL:
-
-```text
-86400 seconds
-```
-
-Use runtime `cache_ttl_seconds` when valid.
-
-Fallback safely to 86400.
-
-Cache write data:
+Store:
 
 ```text
 cache_key
@@ -534,161 +709,59 @@ is_approximate
 expires_at
 ```
 
-The stored `normalized_json` must be exactly the Worker-owned normalized response or a versioned internal DTO.
-
-Do not store the provider response.
-
-Cache read must:
-
-* parse normalized JSON safely
-* validate required DTO fields
-* reject malformed cached JSON
-* reject expired entries
-* not crash the Worker
-
-A malformed cache entry should behave as a cache miss.
-
-## 16. Usage and Budget Integration
-
-Use UTC date:
+Recommended TTL:
 
 ```text
-YYYY-MM-DD
+runtime cache_ttl_seconds
+fallback 86400
 ```
 
-Required sequence on cache miss:
+Store exactly the normalized response.
+
+Do not store:
+
+* provider payload
+* headers
+* User-Agent
+* raw nutriments
+* image metadata
+* ingredients
+* debug status
+
+## 25. Runtime Sequence
+
+On valid cache miss:
 
 1. increment `cache_misses`
-2. read runtime config
-3. block if disabled
-4. check daily budget
-5. block if exhausted
-6. validate API key
-7. increment `external_calls` immediately before actual fetch
-8. call USDA
+2. read `safe_mode`
+3. read `online_lookup_enabled`
+4. read `open_food_facts_provider_enabled`
+5. read `barcode_lookup_enabled`
+6. read daily budget
+7. validate `OPEN_FOOD_FACTS_USER_AGENT`
+8. increment `external_calls`
+9. call provider once
 
-Blocked calls:
+Blocked gates increment `blocked_calls`.
 
-* safe mode: increment `blocked_calls`
-* online lookup disabled: increment `blocked_calls`
-* provider disabled: increment `blocked_calls`
-* budget exceeded: increment `blocked_calls`
+Missing User-Agent should also increment `blocked_calls` if configuration failures are treated consistently with the USDA missing-key implementation.
 
-Missing API key is configuration failure.
+This behavior must be documented and tested.
 
-It may increment `blocked_calls` if the project treats configuration blocks consistently, but this behavior must be selected explicitly and tested.
+## 26. Errors
 
-Do not increment:
+Extend the catalog only where necessary.
 
-```text
-external_calls
-```
-
-when:
-
-* cache hit
-* safe mode blocks
-* online lookup disabled
-* provider disabled
-* budget exceeded
-* API key is missing before fetch
-* request validation fails
-
-## 17. Runtime Configuration
-
-Required runtime checks:
+Add:
 
 ```text
-safe_mode
-online_lookup_enabled
-usda_provider_enabled
-daily_external_call_budget
-cache_enabled
-cache_ttl_seconds
+invalid_barcode
+feature_disabled
 ```
 
-Current conservative defaults remain:
+Preserve existing:
 
 ```text
-safe_mode = true
-online_lookup_enabled = false
-usda_provider_enabled = false
-daily_external_call_budget = 25
-cache_enabled = true
-cache_ttl_seconds = 86400
-```
-
-Testing provider success requires mocked runtime config values or an injected configuration layer.
-
-Do not change defaults globally to enabled.
-
-## 18. Route Orchestration
-
-Keep `index.ts` small.
-
-Suggested route logic:
-
-```ts
-if (pathname === "/v1/foods/generic") {
-  if (method !== "GET") {
-    return error("method_not_allowed");
-  }
-
-  return handleGenericFoodLookup(request, env);
-}
-```
-
-Put the main use-case logic in:
-
-```text
-services/genericFoodLookup.ts
-```
-
-The service should return a typed result or throw/return known domain errors.
-
-Avoid deeply nested logic in the route.
-
-## 19. Response Envelope
-
-Use the existing Worker response helpers.
-
-Success:
-
-```json
-{
-  "ok": true,
-  "data": {
-    "query": "egg",
-    "source": "USDA",
-    "attribution": "USDA FoodData Central",
-    "isApproximate": true,
-    "results": []
-  }
-}
-```
-
-Error:
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "provider_timeout",
-    "message": "Food lookup is temporarily unavailable."
-  }
-}
-```
-
-Messages must remain safe and generic.
-
-Do not include internal details.
-
-## 20. Error Codes
-
-Extend the existing error catalog with:
-
-```text
-invalid_query
 lookup_disabled
 provider_disabled
 budget_exceeded
@@ -700,187 +773,238 @@ not_found
 configuration_error
 ```
 
-Use consistent HTTP statuses.
-
-Suggested mapping:
+Mapping:
 
 ```text
-invalid_query -> 400
-lookup_disabled -> 503
-provider_disabled -> 503
-budget_exceeded -> 429
-provider_timeout -> 504
-provider_rate_limited -> 429
-provider_unavailable -> 503
-provider_error -> 502
-not_found -> 404
-configuration_error -> 503
+invalid_barcode -> 400
+feature_disabled -> 503
 ```
 
-Do not expose whether a secret exists beyond the generic configuration error.
+Do not create Open Food Facts-specific public error codes.
 
-## 21. Tests
+Provider identity is an internal implementation detail.
 
-All tests must run without live USDA access.
+## 27. Routing
 
-### Query tests
+Keep `index.ts` small.
 
-* missing `q`
-* empty `q`
-* whitespace-only `q`
-* query below `minQueryLength`
-* valid normalized query
-* repeated internal whitespace
+Suggested path matching:
 
-### Cache tests
+```ts
+const barcodePrefix = "/v1/foods/barcode/";
 
-* valid cache hit returns response
-* cache hit avoids provider fetch
-* cache hit increments hit count
-* cache hit increments daily cache hit
-* expired entry acts as miss
-* malformed JSON acts as miss
-* cache disabled skips cache read/write if that is the selected contract
-* normalized provider response is cached
-* raw provider payload is never passed to cache write
+if (pathname.startsWith(barcodePrefix)) {
+  if (method !== "GET") {
+    return error("method_not_allowed");
+  }
 
-### Runtime gate tests
+  const rawBarcode = pathname.slice(barcodePrefix.length);
+  // Validate exactly one segment.
+}
+```
 
-* safe mode blocks
-* online lookup disabled blocks
-* USDA provider disabled blocks
-* blocked gate increments `blocked_calls`
-* blocked gate does not increment `external_calls`
-* budget exhausted blocks
-* budget exhausted returns `budget_exceeded`
+Required route behavior:
 
-### Configuration tests
+* `/v1/foods/barcode/3017620422003` -> lookup
+* `/v1/foods/barcode/` -> invalid barcode or route handling selected consistently
+* `/v1/foods/barcode/123/extra` -> reject
+* encoded slash/path traversal -> reject
+* POST -> method_not_allowed
+* unrelated paths remain not_found
 
-* missing `USDA_API_KEY` returns `configuration_error`
-* missing key does not call fetch
-* missing key does not increment external calls
+Do not use loose matching that accepts nested paths.
 
-### Provider client tests
+## 28. Tests
 
-* request URL uses USDA endpoint
-* API key is included only in provider request
-* POST body is controlled
-* fixed page size is used
-* allowed generic data types are used
-* timeout abort maps correctly
-* 429 maps correctly
-* 5xx maps correctly
-* invalid JSON maps correctly
-* invalid top-level shape maps correctly
+All unit tests run without live Open Food Facts access.
+
+### Barcode tests
+
+* valid 8 digits
+* valid 12 digits
+* valid 13 digits
+* valid 14 digits
+* leading zeroes preserved
+* empty
+* whitespace-only
+* letters
+* punctuation
+* too short
+* unsupported length
+* embedded spaces
+* very long input
+
+### Provider transport tests
+
+* correct base URL
+* correct API version and product path
+* barcode encoded safely
+* GET
+* no request body
+* custom User-Agent header
+* Accept JSON header
+* timeout signal present
+* no credentials or API key headers
+* only one request
+
+### Provider response tests
+
+* successful product
+* official valid not-found payload
+* HTTP 404 if applicable
+* 429
+* 503
+* other 5xx
+* other non-success
+* invalid JSON
+* top-level null
+* top-level array
+* missing status/result fields
+* success without product
+* malformed product
 
 ### Normalizer tests
 
-* valid Foundation food
-* valid SR Legacy food
-* valid FNDDS/Survey food if supported
-* calories/protein/carbohydrate/fat mapping
-* missing nutrient returns `null`
-* zero nutrient remains zero
-* invalid number returns `null`
-* malformed food is skipped
-* no raw nutrient arrays in output
-* attribution and approximate flags exist
+* complete product
+* missing product name
+* generic-name fallback
+* brands normalization
+* duplicate brands
+* quantity
+* serving size
+* four nutrients per 100 g
+* four nutrients per serving
+* missing values
+* valid zero values
+* invalid strings
+* NaN
+* Infinity
+* no kJ-as-kcal
+* barcode remains string
+* leading zeroes preserved
+
+### DTO guard tests
+
+* valid DTO
+* empty object
+* root array
+* wrong source
+* false approximate flag
+* numeric barcode
+* malformed product
+* malformed brands
+* missing nutrition fields
+* invalid nutrient type
+* NaN
+* Infinity
+
+### Service tests
+
+* valid cache hit
+* cache hit avoids provider
+* cache hit counters
+* expired cache miss
+* malformed cache miss
+* safe mode block
+* online lookup block
+* provider block
+* feature block
+* budget block
+* blocked counters
+* missing User-Agent
+* successful provider call
+* external call counter
+* normalized response cached
+* raw payload not cached
+* not found
+* rate limited
+* timeout
+* unavailable
+* invalid provider response
 
 ### Route tests
 
-* GET valid query success
-* POST returns method_not_allowed
-* invalid query returns invalid_query
-* cache hit success
-* provider success
-* provider timeout
-* provider rate limit
-* provider unavailable
-* no usable results returns not_found
-* `/v1/health` remains unchanged
-* `/v1/config` remains unchanged
+* valid barcode GET
+* invalid barcode
+* missing barcode
+* unsupported method
+* nested trailing path rejected
+* existing USDA route unchanged
+* health unchanged
+* config unchanged
+* unknown route unchanged
 
-## 22. Testing Architecture
+## 29. Test Architecture
 
-Prefer dependency injection for:
+Use dependency injection for provider `fetch`.
 
-```text
-fetch
-clock/date
-timeout
-runtime config
-provider client
-```
+Avoid:
 
-Do not require a full dependency-injection framework.
+* live provider calls
+* global network mocks
+* tests depending on current Open Food Facts product availability
+* real email/User-Agent values
+* real credentials
+* execution-order dependencies
 
-Simple function parameters or small interfaces are enough.
+Use fixture objects containing only minimal provider fields.
 
-Avoid global mutable mocks.
-
-Avoid tests that depend on execution order.
-
-## 23. README Updates
+## 30. README Updates
 
 Document:
 
 ```text
-USDA_API_KEY requirement
-data.gov key responsibility
-local .dev.vars setup
-Cloudflare secret setup
-safe-mode defaults
-runtime flags needed for provider calls
-generic endpoint
-example curl
+barcode endpoint
+supported barcode lengths
+Open Food Facts API v3 product read
+custom User-Agent requirement
+.dev.vars setup
+runtime flags
+local D1 enable commands
 cache-first behavior
-daily budget behavior
-provider timeout behavior
-USDA attribution
-no raw payload storage
+daily budget
+rate-limit-friendly design
+timeout behavior
+attribution and ODbL
+community data caveat
+known barcode curl
+invalid barcode curl
+restoring conservative defaults
+no text search
 no Android integration yet
 ```
 
-Example local file:
+Example:
 
 ```text
-worker/food-lookup/.dev.vars
+OPEN_FOOD_FACTS_USER_AGENT=GymLedger/0.1 (contact@example.invalid)
 ```
 
-Example content:
+Use a clearly non-real example domain.
 
-```text
-USDA_API_KEY=your-local-key
-```
+Do not commit a real address.
 
-Explicitly say:
+## 31. Manual QA
 
-```text
-Do not commit .dev.vars.
-```
+Use one known barcode and one intentionally unknown valid-format barcode.
 
-Do not put a real key in README.
+Required checks:
 
-## 24. Manual QA Sequence
+* conservative defaults block external lookup
+* valid enabled lookup returns normalized response
+* repeated barcode uses cache
+* unknown barcode returns not_found
+* invalid barcode returns invalid_barcode
+* provider feature flag blocks
+* no raw OFF fields
+* no User-Agent/contact leak
+* D1 counters behave correctly
 
-1. Apply local D1 migration.
-2. Set local USDA API key.
-3. Start Worker.
-4. Confirm `/v1/health`.
-5. Confirm `/v1/config`.
-6. Confirm provider call is blocked under conservative defaults.
-7. Enable required runtime flags locally.
-8. Call generic endpoint with `egg`.
-9. Inspect normalized DTO.
-10. Repeat same query.
-11. Confirm second request uses cache.
-12. Inspect D1 usage counters.
-13. Disable USDA provider.
-14. Confirm provider-disabled error.
-15. Test invalid query.
-16. Do not deploy.
+Manual QA is optional before code review if it would require provider access not already configured.
 
-## 25. Quality Gates
+It becomes mandatory before Phase 17E.4 deployment completion.
+
+## 32. Quality Gates
 
 From repo root:
 
@@ -889,15 +1013,10 @@ git status --short --untracked-files=all
 git diff --name-status
 git diff --stat
 git diff --check
-```
-
-Android no-touch:
-
-```bash
 git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
 ```
 
-Worker validation:
+Worker:
 
 ```bash
 cd worker/food-lookup
@@ -905,92 +1024,108 @@ npm run typecheck
 npm test
 ```
 
-D1 local validation:
+D1:
 
 ```bash
 npx wrangler d1 migrations list gymledger-food-lookup --local
 npx wrangler d1 migrations apply gymledger-food-lookup --local
 ```
 
-Open Food Facts no-scope gate:
+No search:
 
 ```bash
-grep -R -nE "openfoodfacts|world\.openfoodfacts\.org" src || true
+grep -R -nE "cgi/search\.pl|/search\?|search-as-you-type" src || true
 ```
 
-Barcode no-scope gate:
+No write/auth credentials:
 
 ```bash
-grep -R -nE "barcode|foods/barcode" src || true
+grep -R -nE "user_id|password|Authorization|session cookie" src || true
 ```
 
-Raw provider payload gate:
+No raw storage:
 
 ```bash
-grep -R -nE "rawPayload|raw_json|providerPayload|usdaResponse" src || true
+grep -R -nE "rawPayload|raw_json|providerPayload|offResponse|openFoodFactsResponse" src || true
 ```
 
-Secret no-commit gate:
+No images:
 
 ```bash
-git grep -nE "USDA_API_KEY\s*=|api_key=[A-Za-z0-9_-]{10,}" -- \
-  ':!worker/food-lookup/README.md' \
-  ':!docs/CURRENT_PHASE.md' \
-  ':!docs/IMPLEMENTATION_PLAN.md' || true
+grep -R -nE "image_url|selected_images|images\.openfoodfacts" src || true
 ```
 
-## 26. Explicitly Out of Scope
+No Android:
+
+```bash
+git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
+```
+
+## 33. Explicitly Out of Scope
 
 ```text
-Open Food Facts
-barcode scanning
-packaged-food search
 Android networking
-Android DTOs
-Retrofit
-OkHttp
-Android settings UI
-remote Worker deployment
-custom domain
-user accounts
-personal cloud sync
-provider result persistence in Room
+Android barcode scanner
+camera integration
+ML Kit
+ZXing
+camera permission
 food selection UI
 meal logging integration
+product text search
+search suggestions
+search-as-you-type
+Open Food Facts writes
+product contribution
+image upload
+image download
+ingredients
+allergens
+additives
+Nutri-Score
+NOVA
+Green-Score
+Eco-Score
+cloud personal data
+remote deployment
+custom domain
 ```
 
-## 27. Stop Conditions
+## 34. Stop Conditions
 
-Stop before editing or continuing when:
+Stop before editing or continuing if:
 
-* the existing Phase 17E.1 code differs materially from this plan
-* current cache helpers cannot support expiration safely
-* the USDA search response cannot reliably support per-100-g values
-* required nutrient identifiers are ambiguous
-* live network access would be required for unit tests
-* the implementation requires Android changes
-* the implementation requires an additional D1 migration
-* a remote migration or deploy is proposed
-* a real API key is found in tracked files
-* the implementation expands to Open Food Facts or barcode lookup
-* validation fails twice after focused corrections
+* current Open Food Facts v3 product endpoint differs materially
+* User-Agent requirements cannot be satisfied without committing personal data
+* official not-found semantics remain ambiguous after inspection
+* the implementation requires provider search
+* the implementation requires multiple provider requests
+* the implementation requires a schema migration
+* Android changes are proposed
+* tests require live internet
+* product image support enters scope
+* write authentication enters scope
+* validation fails twice after focused fixes
 
-## 28. Final Builder Report
+## 35. Final Builder Report
 
 The builder must stop after implementation and report:
 
 1. Files created.
 2. Files modified.
-3. Query and cache flow implemented.
-4. Runtime and budget gates implemented.
-5. USDA request strategy.
-6. Nutrient identifiers used.
+3. Barcode validation contract.
+4. Provider endpoint and API version used.
+5. User-Agent handling.
+6. Provider not-found semantics.
 7. DTO shape.
-8. Error mapping.
-9. Test count and results.
-10. Typecheck result.
-11. D1 local migration result.
-12. Manual QA performed or not performed.
-13. Any behavior requiring user approval.
-14. Confirmation that Android was untouched.
-15. Confirmation that no key or raw provider payload was committed.
+8. Nutrition fields normalized.
+9. Cache behavior.
+10. Runtime and budget gates.
+11. Error mapping.
+12. Test count and results.
+13. Typecheck result.
+14. D1 local result.
+15. Manual QA performed or not performed.
+16. Any provider behavior requiring approval.
+17. Confirmation Android was untouched.
+18. Confirmation no personal contact, credentials, or raw payload was committed.

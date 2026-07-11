@@ -6,13 +6,13 @@ Phase 17E.1 — D1 Cache and Budget Foundation.
 
 Phase 17E.2 — USDA Generic Food Lookup Provider.
 
+Phase 17E.3 — Open Food Facts Barcode Lookup Provider.
+
 ## Status
 
 USDA generic food lookup provider implemented.
 
-No Open Food Facts provider yet.
-
-No barcode lookup yet.
+Open Food Facts barcode lookup provider implemented.
 
 D1 cache and budget foundation implemented.
 
@@ -29,6 +29,7 @@ No secrets should be committed.
 | GET | /v1/health | Health check |
 | GET | /v1/config | Safe public config |
 | GET | /v1/foods/generic?q=<query> | USDA generic food lookup |
+| GET | /v1/foods/barcode/:barcode | Open Food Facts barcode lookup |
 
 ## Setup
 
@@ -107,11 +108,17 @@ curl -i "http://localhost:8787/v1/foods/generic?q=egg"
 curl -i "http://localhost:8787/v1/foods/generic?q="
 curl -i "http://localhost:8787/v1/foods/generic?q=ab"
 curl -i -X POST http://localhost:8787/v1/foods/generic?q=egg
+curl -i http://localhost:8787/v1/foods/barcode/3017620422003
+curl -i http://localhost:8787/v1/foods/barcode/1234
+curl -i http://localhost:8787/v1/foods/barcode/ABC123
+curl -i -X POST http://localhost:8787/v1/foods/barcode/3017620422003
 ```
 
 ## Local Provider QA
 
-By default, the Worker runs in safe mode with all providers disabled. To test the USDA provider locally:
+By default, the Worker runs in safe mode with all providers disabled.
+
+### USDA Provider QA
 
 1. Ensure `.dev.vars` contains `USDA_API_KEY=<your-key>`.
 
@@ -146,6 +153,50 @@ npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLA
 npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('usda_provider_enabled', 'false', datetime('now'));"
 ```
 
+### Open Food Facts Barcode Provider QA
+
+1. Ensure `.dev.vars` contains `OPEN_FOOD_FACTS_USER_AGENT=GymLedger/0.1 (contact@example.invalid)`.
+   Use a clearly non-real example email. Do not commit a real address.
+
+2. Apply local D1 migrations:
+```bash
+npx wrangler d1 migrations apply gymledger-food-lookup --local
+```
+
+3. Enable barcode lookup via local D1:
+```bash
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('safe_mode', 'false', datetime('now'));"
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('online_lookup_enabled', 'true', datetime('now'));"
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('open_food_facts_provider_enabled', 'true', datetime('now'));"
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('barcode_lookup_enabled', 'true', datetime('now'));"
+```
+
+4. Start the Worker:
+```bash
+npm run dev
+```
+
+5. Test with a known barcode:
+```bash
+curl -i http://localhost:8787/v1/foods/barcode/3017620422003
+```
+
+6. Test invalid barcodes:
+```bash
+curl -i http://localhost:8787/v1/foods/barcode/1234
+curl -i http://localhost:8787/v1/foods/barcode/ABC123
+```
+
+7. Repeat the valid barcode to verify cache behavior (second call is served from cache).
+
+8. Restore conservative defaults:
+```bash
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('safe_mode', 'true', datetime('now'));"
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('online_lookup_enabled', 'false', datetime('now'));"
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('open_food_facts_provider_enabled', 'false', datetime('now'));"
+npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('barcode_lookup_enabled', 'false', datetime('now'));"
+```
+
 ## Runtime Configuration
 
 | Key | Default | Description |
@@ -153,24 +204,30 @@ npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLA
 | safe_mode | true | Blocks all external provider calls |
 | online_lookup_enabled | false | Master switch for online lookups |
 | usda_provider_enabled | false | Enables USDA provider |
+| open_food_facts_provider_enabled | false | Enables Open Food Facts provider |
+| barcode_lookup_enabled | false | Enables barcode lookup feature |
 | daily_external_call_budget | 25 | Max external calls per UTC day |
 | cache_enabled | true | Enables D1 cache |
 | cache_ttl_seconds | 86400 | Cache TTL (24 hours) |
 
 ## Secrets
 
-Set `GYMLEDGER_API_KEY` in `.dev.vars` for local testing:
+Set keys in `.dev.vars` for local testing:
 
 ```
 GYMLEDGER_API_KEY=test-key
 USDA_API_KEY=your-usda-key
+OPEN_FOOD_FACTS_USER_AGENT=GymLedger/0.1 (contact@example.invalid)
 ```
+
+Use a clearly non-real example email for the User-Agent. Do not commit a real address.
 
 For production, use Cloudflare Workers secrets:
 
 ```bash
 wrangler secret put GYMLEDGER_API_KEY
 wrangler secret put USDA_API_KEY
+wrangler secret put OPEN_FOOD_FACTS_USER_AGENT
 ```
 
 Never commit `.dev.vars` or real API keys.

@@ -5,9 +5,11 @@ export type ErrorCode =
   | "not_found"
   | "method_not_allowed"
   | "invalid_query"
+  | "invalid_barcode"
   | "lookup_disabled"
   | "online_lookup_disabled"
   | "provider_disabled"
+  | "feature_disabled"
   | "budget_exceeded"
   | "provider_timeout"
   | "provider_rate_limited"
@@ -23,9 +25,11 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   not_found: "Not found",
   method_not_allowed: "Method not allowed",
   invalid_query: "Invalid query",
+  invalid_barcode: "Invalid barcode",
   lookup_disabled: "Lookup is disabled",
   online_lookup_disabled: "Online lookup is disabled",
   provider_disabled: "Provider is disabled",
+  feature_disabled: "Feature is disabled",
   budget_exceeded: "Daily budget exceeded",
   provider_timeout: "Provider request timed out",
   provider_rate_limited: "Provider rate limited",
@@ -39,6 +43,7 @@ export function httpStatusFor(code: ErrorCode): number {
   switch (code) {
     case "bad_request":
     case "invalid_query":
+    case "invalid_barcode":
       return 400;
     case "unauthorized":
       return 401;
@@ -54,6 +59,7 @@ export function httpStatusFor(code: ErrorCode): number {
     case "lookup_disabled":
     case "online_lookup_disabled":
     case "provider_disabled":
+    case "feature_disabled":
     case "configuration_error":
       return 503;
     case "provider_timeout":

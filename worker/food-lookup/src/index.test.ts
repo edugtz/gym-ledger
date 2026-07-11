@@ -191,3 +191,138 @@ describe("response shape", () => {
     expect(typeof err.message).toBe("string");
   });
 });
+
+describe("GET /v1/foods/barcode/:barcode", () => {
+  it("returns method_not_allowed for POST", async () => {
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/3017620422003", "POST"),
+      mockEnv
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(405);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("method_not_allowed");
+  });
+
+  it("returns invalid_barcode for missing barcode", async () => {
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/"),
+      mockEnv
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_barcode");
+  });
+
+  it("returns invalid_barcode for trailing slash", async () => {
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/3017620422003/"),
+      mockEnv
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_barcode");
+  });
+
+  it("returns invalid_barcode for nested segment", async () => {
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/3017620422003/extra"),
+      mockEnv
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_barcode");
+  });
+
+  it("returns invalid_barcode for non-numeric barcode", async () => {
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/ABC123"),
+      mockEnv
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_barcode");
+  });
+
+  it("returns invalid_barcode for too-short barcode", async () => {
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/1234"),
+      mockEnv
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_barcode");
+  });
+
+  it("returns lookup_disabled under safe defaults", async () => {
+    const mockPrepare = vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null),
+      run: vi.fn().mockResolvedValue({}),
+    });
+    const envWithDb = {
+      DB: { prepare: mockPrepare } as unknown as D1Database,
+    };
+
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/barcode/3017620422003"),
+      envWithDb
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("lookup_disabled");
+  });
+
+  it("existing USDA route remains unchanged", async () => {
+    const mockPrepare = vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null),
+      run: vi.fn().mockResolvedValue({}),
+    });
+    const envWithDb = {
+      DB: { prepare: mockPrepare } as unknown as D1Database,
+    };
+
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/generic?q=egg"),
+      envWithDb
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("lookup_disabled");
+  });
+
+  it("health and config remain unchanged", async () => {
+    const health = await worker.fetch(makeRequest("/v1/health"), mockEnv);
+    const healthBody = (await health.json()) as ResponseBody;
+    expect(healthBody.ok).toBe(true);
+
+    const config = await worker.fetch(makeRequest("/v1/config"), mockEnv);
+    const configBody = (await config.json()) as ResponseBody;
+    expect(configBody.ok).toBe(true);
+  });
+
+  it("unknown route still returns not_found", async () => {
+    const res = await worker.fetch(makeRequest("/unknown"), mockEnv);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(404);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("not_found");
+  });
+});

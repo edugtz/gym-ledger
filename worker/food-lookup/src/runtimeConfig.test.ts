@@ -6,6 +6,7 @@ import {
   getOnlineLookupAvailable,
   getUsdaProviderEnabled,
   getOpenFoodFactsProviderEnabled,
+  getBarcodeLookupEnabled,
   getMaxDailyExternalCalls,
   getCacheEnabled,
   getCacheTtlSeconds,
@@ -104,6 +105,26 @@ describe("runtime config operations", () => {
 
     const result = await getOpenFoodFactsProviderEnabled({ DB: mockDb } as any);
     expect(result).toBe(false);
+  });
+
+  it("gets barcode lookup enabled with default", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null)
+    });
+
+    const result = await getBarcodeLookupEnabled({ DB: mockDb } as any);
+    expect(result).toBe(false);
+  });
+
+  it("gets barcode lookup enabled from database", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "true" })
+    });
+
+    const result = await getBarcodeLookupEnabled({ DB: mockDb } as any);
+    expect(result).toBe(true);
   });
 
   it("gets max daily external calls with default", async () => {

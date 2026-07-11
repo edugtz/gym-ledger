@@ -67,6 +67,11 @@ export async function getOpenFoodFactsProviderEnabled(env: Env): Promise<boolean
   return value === "true";
 }
 
+export async function getBarcodeLookupEnabled(env: Env): Promise<boolean> {
+  const value = await getRuntimeConfig(env, "barcode_lookup_enabled", DEFAULT_CONFIG.barcode_lookup_enabled);
+  return value === "true";
+}
+
 export async function getMaxDailyExternalCalls(env: Env): Promise<number> {
   const value = await getRuntimeConfig(env, "daily_external_call_budget", DEFAULT_CONFIG.daily_external_call_budget);
   return parseInt(value, 10) || 25;
