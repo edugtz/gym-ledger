@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import worker from "./index";
 
 interface SuccessBody {
@@ -21,7 +21,6 @@ function makeRequest(
   return new Request(`http://localhost:8787${path}`, { method, headers });
 }
 
-// Mock environment with DB binding
 const mockEnv = {
   DB: {} as D1Database,
 };
@@ -77,6 +76,74 @@ describe("GET /v1/config", () => {
     expect(res.status).toBe(405);
     expect(body.ok).toBe(false);
     expect((body as ErrorBody).error.code).toBe("method_not_allowed");
+  });
+});
+
+describe("GET /v1/foods/generic", () => {
+  it("returns method_not_allowed for POST", async () => {
+    const res = await worker.fetch(makeRequest("/v1/foods/generic", "POST"), mockEnv);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(405);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("method_not_allowed");
+  });
+
+  it("returns invalid_query for missing q", async () => {
+    const res = await worker.fetch(makeRequest("/v1/foods/generic"), mockEnv);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_query");
+  });
+
+  it("returns invalid_query for empty q", async () => {
+    const res = await worker.fetch(makeRequest("/v1/foods/generic?q="), mockEnv);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_query");
+  });
+
+  it("returns invalid_query for too-short q", async () => {
+    const res = await worker.fetch(makeRequest("/v1/foods/generic?q=ab"), mockEnv);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_query");
+  });
+
+  it("returns invalid_query for whitespace-only q", async () => {
+    const res = await worker.fetch(makeRequest("/v1/foods/generic?q=%20%20"), mockEnv);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("invalid_query");
+  });
+
+  it("returns lookup_disabled under safe defaults", async () => {
+    const mockPrepare = vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null),
+      run: vi.fn().mockResolvedValue({}),
+    });
+    const envWithDb = {
+      DB: { prepare: mockPrepare } as unknown as D1Database,
+    };
+
+    const res = await worker.fetch(
+      makeRequest("/v1/foods/generic?q=egg"),
+      envWithDb
+    );
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect((body as ErrorBody).error.code).toBe("lookup_disabled");
   });
 });
 

@@ -6,7 +6,9 @@ import {
   getOnlineLookupAvailable,
   getUsdaProviderEnabled,
   getOpenFoodFactsProviderEnabled,
-  getMaxDailyExternalCalls
+  getMaxDailyExternalCalls,
+  getCacheEnabled,
+  getCacheTtlSeconds,
 } from "./runtimeConfig";
 
 describe("runtime config operations", () => {
@@ -122,5 +124,55 @@ describe("runtime config operations", () => {
 
     const result = await getRuntimeConfig({ DB: mockDb } as any, "daily_external_call_budget");
     expect(result).toBe("25");
+  });
+
+  it("gets cache enabled with default true", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null)
+    });
+
+    const result = await getCacheEnabled({ DB: mockDb } as any);
+    expect(result).toBe(true);
+  });
+
+  it("gets cache enabled from database", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "false" })
+    });
+
+    const result = await getCacheEnabled({ DB: mockDb } as any);
+    expect(result).toBe(false);
+  });
+
+  it("gets cache ttl seconds with default", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null)
+    });
+
+    const result = await getCacheTtlSeconds({ DB: mockDb } as any);
+    expect(result).toBe(86400);
+  });
+
+  it("gets cache ttl seconds from database", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "3600" })
+    });
+
+    const result = await getCacheTtlSeconds({ DB: mockDb } as any);
+    expect(result).toBe(3600);
+  });
+
+  it("returns 86400 for invalid cache ttl", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "not-a-number" })
+    });
+
+    const result = await getCacheTtlSeconds({ DB: mockDb } as any);
+    expect(result).toBe(86400);
   });
 });

@@ -1,5 +1,3 @@
-// Cache helpers for food lookup results
-
 import { Env } from "./db";
 
 export interface FoodLookupCacheEntry {
@@ -22,8 +20,34 @@ export function buildCacheKey(
   lookupType: string,
   query: string
 ): string {
-  // Create a stable cache key based on source, lookup type and query
   return `${source}:${lookupType}:${query.toLowerCase().trim()}`;
+}
+
+export function isCacheEntryExpired(
+  entry: FoodLookupCacheEntry
+): boolean {
+  if (!entry.expires_at) {
+    return false;
+  }
+  const expiresAt = new Date(entry.expires_at);
+  if (isNaN(expiresAt.getTime())) {
+    return true;
+  }
+  return expiresAt.getTime() <= Date.now();
+}
+
+export function parseNormalizedJson<T>(
+  json: string
+): T | null {
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed as T;
+  } catch {
+    return null;
+  }
 }
 
 export async function getCacheEntry(
@@ -33,7 +57,7 @@ export async function getCacheEntry(
   const result = await env.DB.prepare(
     "SELECT * FROM food_lookup_cache WHERE cache_key = ?"
   ).bind(cacheKey).first<FoodLookupCacheEntry>();
-  
+
   return result || null;
 }
 
@@ -42,7 +66,7 @@ export async function setCacheEntry(
   entry: Omit<FoodLookupCacheEntry, "created_at" | "updated_at" | "hit_count" | "last_hit_at">
 ): Promise<void> {
   const now = new Date().toISOString();
-  
+
   await env.DB.prepare(
     `INSERT OR REPLACE INTO food_lookup_cache (
       cache_key, source, lookup_type, query, normalized_json, attribution, 
@@ -69,7 +93,7 @@ export async function incrementCacheHit(
   cacheKey: string
 ): Promise<void> {
   const now = new Date().toISOString();
-  
+
   await env.DB.prepare(
     `UPDATE food_lookup_cache 
      SET hit_count = hit_count + 1, last_hit_at = ? 

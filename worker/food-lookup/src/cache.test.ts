@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { buildCacheKey, getCacheEntry, setCacheEntry, incrementCacheHit } from "./cache";
+import {
+  buildCacheKey,
+  getCacheEntry,
+  setCacheEntry,
+  incrementCacheHit,
+  isCacheEntryExpired,
+  parseNormalizedJson,
+  type FoodLookupCacheEntry,
+} from "./cache";
 
 describe("buildCacheKey", () => {
   it("creates a stable cache key from source, lookup type and query", () => {
@@ -71,5 +79,68 @@ describe("cache operations", () => {
     await incrementCacheHit({ DB: mockDb } as any, "test:key");
 
     expect(mockRun).toHaveBeenCalled();
+  });
+});
+
+describe("isCacheEntryExpired", () => {
+  function makeEntry(overrides: Partial<FoodLookupCacheEntry> = {}): FoodLookupCacheEntry {
+    return {
+      cache_key: "test",
+      source: "usda",
+      lookup_type: "generic",
+      query: "egg",
+      normalized_json: "{}",
+      is_approximate: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      hit_count: 0,
+      ...overrides,
+    };
+  }
+
+  it("returns false when expires_at is undefined", () => {
+    expect(isCacheEntryExpired(makeEntry())).toBe(false);
+  });
+
+  it("returns false when expires_at is in the future", () => {
+    const future = new Date(Date.now() + 86400000).toISOString();
+    expect(isCacheEntryExpired(makeEntry({ expires_at: future }))).toBe(false);
+  });
+
+  it("returns true when expires_at is in the past", () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    expect(isCacheEntryExpired(makeEntry({ expires_at: past }))).toBe(true);
+  });
+
+  it("returns true when expires_at is invalid date string", () => {
+    expect(isCacheEntryExpired(makeEntry({ expires_at: "not-a-date" }))).toBe(true);
+  });
+});
+
+describe("parseNormalizedJson", () => {
+  it("parses valid JSON object", () => {
+    const result = parseNormalizedJson<{ a: number }>('{"a":1}');
+    expect(result).toEqual({ a: 1 });
+  });
+
+  it("returns null for invalid JSON", () => {
+    expect(parseNormalizedJson("not-json")).toBeNull();
+  });
+
+  it("returns null for JSON null", () => {
+    expect(parseNormalizedJson("null")).toBeNull();
+  });
+
+  it("returns null for JSON string", () => {
+    expect(parseNormalizedJson('"hello"')).toBeNull();
+  });
+
+  it("returns null for JSON number", () => {
+    expect(parseNormalizedJson("42")).toBeNull();
+  });
+
+  it("returns parsed object for valid JSON array", () => {
+    const result = parseNormalizedJson("[1,2]");
+    expect(result).toEqual([1, 2]);
   });
 });
