@@ -1,77 +1,43 @@
-# Phase 17E.1 — Worker D1 Cache and Budget Foundation — Implementation Plan
+# Phase 17E.2 Implementation Plan — USDA Generic Food Lookup Provider
 
-## Objective
+## 1. Goal
 
-Add the Cloudflare D1 cache and budget foundation for GymLedger Food Lookup Worker.
+Implement the USDA generic-food provider slice of Phase 17E.
 
-This phase prepares the Worker for safe, low-cost provider integration in later Phase 17E steps.
-
-This phase does not call USDA.
-
-This phase does not call Open Food Facts.
-
-This phase does not modify Android.
-
-## Product / Architecture Context
-
-GymLedger remains local-first and offline-capable.
+The Worker will add:
 
 ```text
-Cloud helps discover data.
-Room owns saved data.
+GET /v1/foods/generic?q=<query>
 ```
 
-The Worker is optional online-assisted infrastructure. It may help lookup, normalize, cache, and budget external food data in future phases, but it must not become the source of truth for user meals, workouts, body data, photos, or saved personal data.
+The endpoint will:
 
-The purpose of this phase is to add the backend storage and guardrails needed before any external provider is allowed.
+1. validate and normalize the query
+2. check D1 cache
+3. return a valid normalized cache hit immediately
+4. evaluate safe-mode, provider, and budget gates on cache miss
+5. call USDA only when allowed
+6. normalize provider results into a Worker-owned DTO
+7. cache only normalized DTOs
+8. return stable errors without exposing provider internals
 
-## Phase Mapping
+No Android work is included.
 
-This phase implements:
+No Open Food Facts work is included.
+
+## 2. Existing Foundation to Reuse
+
+Phase 17E.1 already provides:
 
 ```text
-Backend Phase B2 — D1 Cache and Budget Foundation
+worker/food-lookup/src/db.ts
+worker/food-lookup/src/cache.ts
+worker/food-lookup/src/usage.ts
+worker/food-lookup/src/runtimeConfig.ts
+worker/food-lookup/migrations/0001_cache_budget_foundation.sql
 ```
 
-It is the first implementation slice of:
-
-```text
-Phase 17E — Worker Food Providers and Cache
-```
-
-Provider work is intentionally deferred.
-
-## In Scope
-
-Create or update Worker backend files only.
-
-### D1 Setup
-
-Add Cloudflare D1 support for the Worker:
-
-```text
-- D1 database binding in wrangler.toml
-- local/remote migration folder
-- initial migration SQL
-```
-
-The D1 binding should be named:
-
-```text
-DB
-```
-
-Recommended D1 database name:
-
-```text
-gymledger-food-lookup
-```
-
-If Cloudflare creates a different database id, update only `database_id` in `wrangler.toml`.
-
-### Tables
-
-Add initial schema for:
+Existing tables:
 
 ```text
 food_lookup_cache
@@ -79,427 +45,859 @@ usage_daily
 runtime_config
 ```
 
-### food_lookup_cache
-
-Purpose:
-
-Cache normalized lookup results returned by future providers.
-
-This table must store normalized Worker DTOs, not raw provider payloads.
-
-Suggested columns:
+Existing runtime keys:
 
 ```text
-cache_key TEXT PRIMARY KEY
-source TEXT NOT NULL
-lookup_type TEXT NOT NULL
-query TEXT NOT NULL
-normalized_json TEXT NOT NULL
-attribution TEXT
-is_approximate INTEGER NOT NULL DEFAULT 1
-created_at TEXT NOT NULL
-updated_at TEXT NOT NULL
-expires_at TEXT NOT NULL
-hit_count INTEGER NOT NULL DEFAULT 0
-last_hit_at TEXT
+safe_mode
+online_lookup_enabled
+usda_provider_enabled
+open_food_facts_provider_enabled
+generic_food_search_enabled
+barcode_lookup_enabled
+daily_external_call_budget
+cache_enabled
+cache_ttl_seconds
 ```
 
-Notes:
+Do not create duplicate cache, usage, or runtime-config systems.
+
+## 3. Implementation Strategy
+
+Recommended request flow:
 
 ```text
-cache_key    = stable key such as generic:egg or barcode:7501000112345
-source       = future values like USDA or OpenFoodFacts
-lookup_type  = generic, search, barcode
-query        = original normalized query/barcode
+request
+  -> route/method validation
+  -> query validation and normalization
+  -> cache key generation
+  -> cache read
+  -> valid cache hit?
+       yes:
+         increment cache entry hit count
+         increment usage cache_hits
+         return normalized cached response
+       no:
+         increment usage cache_misses
+         evaluate runtime gates
+         evaluate provider configuration
+         evaluate daily budget
+         call USDA with timeout
+         increment external_calls
+         normalize results
+         validate normalized response
+         cache normalized response
+         return normalized response
 ```
 
-Do not store personal user data.
+Do not place all logic directly inside `index.ts`.
 
-Do not store meal logs.
+Keep route orchestration small.
 
-Do not store Android device/user identifiers.
+## 4. Proposed File Structure
 
-### usage_daily
-
-Purpose:
-
-Track daily Worker/provider usage to prevent accidental cost/rate-limit problems.
-
-Suggested columns:
+Create:
 
 ```text
-usage_date TEXT PRIMARY KEY
-external_calls INTEGER NOT NULL DEFAULT 0
-cache_hits INTEGER NOT NULL DEFAULT 0
-cache_misses INTEGER NOT NULL DEFAULT 0
-blocked_calls INTEGER NOT NULL DEFAULT 0
-last_updated_at TEXT NOT NULL
+worker/food-lookup/src/types/foodLookup.ts
+worker/food-lookup/src/providers/usda.ts
+worker/food-lookup/src/providers/usda.test.ts
+worker/food-lookup/src/normalizers/usdaFood.ts
+worker/food-lookup/src/normalizers/usdaFood.test.ts
+worker/food-lookup/src/services/genericFoodLookup.ts
+worker/food-lookup/src/services/genericFoodLookup.test.ts
 ```
 
-Notes:
+Modify as needed:
 
 ```text
-usage_date = YYYY-MM-DD in UTC
+worker/food-lookup/src/index.ts
+worker/food-lookup/src/index.test.ts
+worker/food-lookup/src/cache.ts
+worker/food-lookup/src/cache.test.ts
+worker/food-lookup/src/usage.ts
+worker/food-lookup/src/usage.test.ts
+worker/food-lookup/src/runtimeConfig.ts
+worker/food-lookup/src/runtimeConfig.test.ts
+worker/food-lookup/src/errors.ts
+worker/food-lookup/src/config.ts
+worker/food-lookup/README.md
 ```
 
-The table should support future logic:
+Do not create every proposed file blindly.
+
+The builder must inspect the existing code and choose the smallest coherent structure.
+
+## 5. Environment Contract
+
+Extend the Worker environment with:
+
+```ts
+USDA_API_KEY?: string;
+```
+
+Existing D1 binding remains:
+
+```ts
+DB: D1Database;
+```
+
+Rules:
+
+* `USDA_API_KEY` is optional at TypeScript compile time.
+* Provider execution requires it at runtime.
+* Missing key returns `configuration_error`.
+* Do not add the key to `wrangler.toml`.
+* Do not add the key to `[vars]`.
+* Use `.dev.vars` locally.
+* Use `wrangler secret put USDA_API_KEY` for deployed environments.
+* Do not commit `.dev.vars`.
+
+## 6. Query Normalization
+
+Create one reusable query normalizer.
+
+Required normalization:
 
 ```text
-- increment external_calls before/after provider call
-- increment cache_hits on cache hit
-- increment cache_misses on cache miss
-- increment blocked_calls when budget/safe-mode blocks a call
+trim surrounding whitespace
+collapse repeated internal whitespace
+lowercase for cache key
+preserve a clean display query for response
 ```
 
-No provider calls happen in this phase.
-
-### runtime_config
-
-Purpose:
-
-Allow safe operational switches without Android releases.
-
-Suggested columns:
+Example:
 
 ```text
-key TEXT PRIMARY KEY
-value TEXT NOT NULL
-updated_at TEXT NOT NULL
+input:  "  Chicken   Breast "
+display query: "Chicken Breast"
+cache query: "chicken breast"
+cache key: "usda:generic:chicken breast"
 ```
 
-Required default keys:
+Do not:
+
+* strip meaningful punctuation indiscriminately
+* accept empty normalized queries
+* accept queries shorter than `minQueryLength`
+* allow client-supplied USDA filters
+* allow client-supplied result limits above the internal fixed limit
+
+## 7. DTO Contract
+
+Define Worker-owned TypeScript types.
+
+Suggested types:
+
+```ts
+export interface GenericFoodLookupResponse {
+  query: string;
+  source: "USDA";
+  attribution: string;
+  isApproximate: true;
+  results: GenericFoodResult[];
+}
+
+export interface GenericFoodResult {
+  externalId: string;
+  name: string;
+  description: string;
+  dataType: string;
+  nutritionPer100g: NutritionPer100g;
+}
+
+export interface NutritionPer100g {
+  caloriesKcal: number | null;
+  proteinG: number | null;
+  carbohydrateG: number | null;
+  fatG: number | null;
+}
+```
+
+Optional internal fields must not leak into the public response unless approved.
+
+Do not expose:
+
+```text
+foodNutrients
+foodMeasures
+marketCountry
+publicationDate
+modifiedDate
+dataSource
+scientificName
+raw response payload
+API metadata unrelated to Android
+```
+
+## 8. USDA Provider Client
+
+Create a small provider client.
+
+Suggested interface:
+
+```ts
+export interface UsdaSearchOptions {
+  query: string;
+  pageSize: number;
+  signal: AbortSignal;
+}
+
+export interface UsdaProviderClient {
+  searchGenericFoods(
+    options: UsdaSearchOptions
+  ): Promise<unknown>;
+}
+```
+
+A concrete implementation may receive:
+
+```ts
+apiKey
+fetch implementation
+base URL
+```
+
+through dependency injection.
+
+This enables deterministic tests without live network calls.
+
+Recommended provider request:
+
+```text
+POST https://api.nal.usda.gov/fdc/v1/foods/search?api_key=<secret>
+```
+
+Suggested controlled body:
+
+```json
+{
+  "query": "egg",
+  "pageSize": 10,
+  "dataType": [
+    "Foundation",
+    "SR Legacy",
+    "Survey (FNDDS)"
+  ]
+}
+```
+
+The exact accepted USDA data-type labels must be verified against provider behavior before finalizing.
+
+Do not include `Branded` in the default generic-food search unless a later product decision approves it.
+
+Provider client responsibilities:
+
+* build URL safely
+* include API key
+* use POST JSON
+* accept an AbortSignal
+* use fixed page size
+* map HTTP status to internal provider errors
+* parse JSON once
+* validate minimum response shape
+* return provider data only to the normalizer/service layer
+
+Provider client must not:
+
+* return a public `Response`
+* build GymLedger API response envelopes
+* write to D1
+* update usage counters
+* log raw response payloads
+* retry repeatedly
+
+## 9. Timeout
+
+Use `AbortController`.
+
+Recommended timeout:
+
+```text
+5 seconds
+```
+
+Keep timeout in a named constant.
+
+Tests should use a shorter injected timeout or mocked fetch rather than waiting five real seconds.
+
+Map aborts caused by the timeout to:
+
+```text
+provider_timeout
+```
+
+Do not map unrelated runtime errors to timeout.
+
+## 10. Provider Error Mapping
+
+Internal provider result/error categories:
+
+```text
+timeout
+rate_limited
+unavailable
+invalid_response
+unexpected_error
+```
+
+Public mapping:
+
+```text
+timeout -> provider_timeout
+HTTP 429 -> provider_rate_limited
+HTTP 500-599 -> provider_unavailable
+invalid JSON/shape -> provider_error
+other network/provider exception -> provider_error
+```
+
+Do not return provider status text or raw body.
+
+A provider `404` is not expected for search and should not be treated as a valid empty search result automatically.
+
+A valid `200` response with no usable normalized results maps to:
+
+```text
+not_found
+```
+
+## 11. USDA Response Parsing
+
+Treat USDA response payload as unknown at the provider boundary.
+
+Add narrow runtime guards.
+
+Minimum expected search response:
+
+```text
+foods: array
+```
+
+Minimum usable food item:
+
+```text
+fdcId
+description
+foodNutrients
+```
+
+Skip malformed individual results when possible.
+
+Reject the entire provider response only if the top-level shape is unusable.
+
+Limit the normalized result count after filtering malformed entries.
+
+## 12. Nutrient Normalization
+
+Create a pure normalizer.
+
+Input:
+
+```text
+unknown USDA food item
+```
+
+Output:
+
+```text
+GenericFoodResult | null
+```
+
+The normalizer must not access:
+
+* D1
+* environment variables
+* fetch
+* runtime config
+* usage counters
+
+Nutrient targets:
+
+```text
+Energy kcal
+Protein g
+Carbohydrate by difference g
+Total lipid/fat g
+```
+
+Prefer stable identifiers.
+
+Suggested internal matching priority:
+
+1. stable nutrient number or provider nutrient ID
+2. exact normalized nutrient name fallback
+3. no value
+
+Energy rules:
+
+* Prefer kcal directly.
+* If only kJ is available and conversion is implemented:
+
+    * centralize conversion
+    * test it
+    * round predictably
+* Do not use kJ directly as kcal.
+
+Value rules:
+
+* Preserve valid zero values.
+* Reject NaN and non-finite numbers.
+* Return `null` for unavailable values.
+* Do not turn missing values into zero.
+* Do not infer nutrients from unrelated nutrient fields.
+
+Name rules:
+
+```text
+name = provider description
+description = provider description
+```
+
+A later phase may refine display names.
+
+## 13. Per-100-g Contract
+
+The public DTO explicitly means:
+
+```text
+nutritionPer100g
+```
+
+Only include USDA results whose nutrient basis can reasonably be treated as per 100 g under the selected USDA search response contract.
+
+Do not:
+
+* convert serving data without a reliable weight
+* assume one serving equals 100 g
+* combine portion and per-100-g values
+* use branded household serving values in this generic endpoint
+
+Document any USDA data-type assumptions in code comments and README.
+
+## 14. Attribution
+
+Required public values:
+
+```ts
+source: "USDA"
+attribution: "USDA FoodData Central"
+isApproximate: true
+```
+
+Do not imply that USDA endorses GymLedger.
+
+Do not omit attribution from cached responses.
+
+The cached normalized JSON must retain attribution.
+
+## 15. Cache Integration
+
+Extend or use the existing cache helpers.
+
+Cache key:
+
+```text
+usda:generic:<normalized-query>
+```
+
+Lookup type:
+
+```text
+generic
+```
+
+Source:
+
+```text
+usda
+```
+
+Recommended TTL:
+
+```text
+86400 seconds
+```
+
+Use runtime `cache_ttl_seconds` when valid.
+
+Fallback safely to 86400.
+
+Cache write data:
+
+```text
+cache_key
+source
+lookup_type
+query
+normalized_json
+attribution
+is_approximate
+expires_at
+```
+
+The stored `normalized_json` must be exactly the Worker-owned normalized response or a versioned internal DTO.
+
+Do not store the provider response.
+
+Cache read must:
+
+* parse normalized JSON safely
+* validate required DTO fields
+* reject malformed cached JSON
+* reject expired entries
+* not crash the Worker
+
+A malformed cache entry should behave as a cache miss.
+
+## 16. Usage and Budget Integration
+
+Use UTC date:
+
+```text
+YYYY-MM-DD
+```
+
+Required sequence on cache miss:
+
+1. increment `cache_misses`
+2. read runtime config
+3. block if disabled
+4. check daily budget
+5. block if exhausted
+6. validate API key
+7. increment `external_calls` immediately before actual fetch
+8. call USDA
+
+Blocked calls:
+
+* safe mode: increment `blocked_calls`
+* online lookup disabled: increment `blocked_calls`
+* provider disabled: increment `blocked_calls`
+* budget exceeded: increment `blocked_calls`
+
+Missing API key is configuration failure.
+
+It may increment `blocked_calls` if the project treats configuration blocks consistently, but this behavior must be selected explicitly and tested.
+
+Do not increment:
+
+```text
+external_calls
+```
+
+when:
+
+* cache hit
+* safe mode blocks
+* online lookup disabled
+* provider disabled
+* budget exceeded
+* API key is missing before fetch
+* request validation fails
+
+## 17. Runtime Configuration
+
+Required runtime checks:
+
+```text
+safe_mode
+online_lookup_enabled
+usda_provider_enabled
+daily_external_call_budget
+cache_enabled
+cache_ttl_seconds
+```
+
+Current conservative defaults remain:
 
 ```text
 safe_mode = true
 online_lookup_enabled = false
+usda_provider_enabled = false
 daily_external_call_budget = 25
+cache_enabled = true
+cache_ttl_seconds = 86400
 ```
 
-Meaning:
+Testing provider success requires mocked runtime config values or an injected configuration layer.
+
+Do not change defaults globally to enabled.
+
+## 18. Route Orchestration
+
+Keep `index.ts` small.
+
+Suggested route logic:
+
+```ts
+if (pathname === "/v1/foods/generic") {
+  if (method !== "GET") {
+    return error("method_not_allowed");
+  }
+
+  return handleGenericFoodLookup(request, env);
+}
+```
+
+Put the main use-case logic in:
 
 ```text
-safe_mode = true
-  Conservative mode. Future provider calls should be blocked unless a later phase explicitly enables them.
-
-online_lookup_enabled = false
-  Future remote lookup endpoints should not call providers until enabled.
-
-daily_external_call_budget = 25
-  Future cap for external provider calls per UTC day.
+services/genericFoodLookup.ts
 ```
 
-This phase may expose these values through `/v1/config` only if they are safe and public.
+The service should return a typed result or throw/return known domain errors.
 
-## Helper Modules
+Avoid deeply nested logic in the route.
 
-Create small focused modules under:
+## 19. Response Envelope
 
-```text
-worker/food-lookup/src
-```
+Use the existing Worker response helpers.
 
-Recommended files:
-
-```text
-src/db.ts
-src/cache.ts
-src/usage.ts
-src/runtimeConfig.ts
-```
-
-### db.ts
-
-Purpose:
-
-Centralize D1 environment typing and small DB utilities.
-
-Should define or support:
-
-```text
-Env.DB: D1Database
-```
-
-Existing `Env` type in `src/index.ts` may be moved or expanded if cleaner.
-
-### cache.ts
-
-Purpose:
-
-Provide cache helper functions for normalized lookup data.
-
-Suggested functions:
-
-```text
-buildCacheKey(input): string
-getCachedFoodLookup(db, cacheKey, now): Promise<CachedFoodLookup | null>
-putCachedFoodLookup(db, entry): Promise<void>
-```
-
-Behavior:
-
-```text
-- expired cache returns null
-- cache hit increments hit_count and last_hit_at
-- put writes normalized JSON only
-- no raw provider payload is stored
-```
-
-### usage.ts
-
-Purpose:
-
-Provide daily usage/budget helper functions.
-
-Suggested functions:
-
-```text
-getUsageDate(now): string
-getDailyUsage(db, usageDate): Promise<DailyUsage>
-incrementCacheHit(db, usageDate): Promise<void>
-incrementCacheMiss(db, usageDate): Promise<void>
-incrementExternalCall(db, usageDate): Promise<void>
-incrementBlockedCall(db, usageDate): Promise<void>
-isDailyBudgetExceeded(usage, budget): boolean
-```
-
-Behavior:
-
-```text
-- creates row if missing
-- uses UTC date
-- does not call providers
-```
-
-### runtimeConfig.ts
-
-Purpose:
-
-Read safe runtime settings from D1 with conservative fallbacks.
-
-Suggested functions:
-
-```text
-getRuntimeConfig(db): Promise<RuntimeConfig>
-getRuntimeConfigValue(db, key): Promise<string | null>
-```
-
-Fallbacks if D1 config is missing:
-
-```text
-safeMode: true
-onlineLookupEnabled: false
-dailyExternalCallBudget: 25
-```
-
-## Endpoint Changes
-
-Keep existing endpoints:
-
-```text
-GET /v1/health
-GET /v1/config
-```
-
-### GET /v1/health
-
-Keep behavior stable.
-
-Do not require D1 for health to return OK unless the implementation explicitly adds a separate D1 diagnostic field.
-
-Recommended response remains lightweight:
+Success:
 
 ```json
 {
   "ok": true,
   "data": {
-    "status": "ok"
+    "query": "egg",
+    "source": "USDA",
+    "attribution": "USDA FoodData Central",
+    "isApproximate": true,
+    "results": []
   }
 }
 ```
 
-### GET /v1/config
-
-Update only if useful and safe.
-
-Allowed public fields:
+Error:
 
 ```json
 {
-  "onlineLookupAvailable": true,
-  "providers": {
-    "usda": false,
-    "openFoodFacts": false
-  },
-  "features": {
-    "genericFoodSearch": false,
-    "barcodeLookup": false
-  },
-  "minQueryLength": 3,
-  "safeMode": true,
-  "cacheAvailable": true,
-  "budgetEnabled": true
+  "ok": false,
+  "error": {
+    "code": "provider_timeout",
+    "message": "Food lookup is temporarily unavailable."
+  }
 }
 ```
 
-Do not expose secrets.
+Messages must remain safe and generic.
 
-Do not expose database ids.
+Do not include internal details.
 
-Do not expose internal Cloudflare account data.
+## 20. Error Codes
 
-## Tests
-
-Keep existing tests passing.
-
-Add tests for:
+Extend the existing error catalog with:
 
 ```text
-- cache key generation
-- expired cache miss
-- valid cache hit
-- cache write stores normalized JSON
-- UTC usage date
-- daily usage default row behavior
-- budget exceeded behavior
-- runtime config fallback values
-- /v1/config remains safe/public
+invalid_query
+lookup_disabled
+provider_disabled
+budget_exceeded
+provider_timeout
+provider_rate_limited
+provider_unavailable
+provider_error
+not_found
+configuration_error
 ```
 
-Tests may use mocked D1 behavior or isolated helper-level tests if full D1 local test setup is too heavy.
+Use consistent HTTP statuses.
 
-Do not make tests depend on external network.
-
-Do not call Cloudflare remote services during unit tests.
-
-## Files to Create
-
-Expected:
+Suggested mapping:
 
 ```text
-worker/food-lookup/migrations/0001_cache_budget_foundation.sql
-worker/food-lookup/src/db.ts
-worker/food-lookup/src/cache.ts
-worker/food-lookup/src/usage.ts
-worker/food-lookup/src/runtimeConfig.ts
+invalid_query -> 400
+lookup_disabled -> 503
+provider_disabled -> 503
+budget_exceeded -> 429
+provider_timeout -> 504
+provider_rate_limited -> 429
+provider_unavailable -> 503
+provider_error -> 502
+not_found -> 404
+configuration_error -> 503
 ```
 
-Optional if needed:
+Do not expose whether a secret exists beyond the generic configuration error.
+
+## 21. Tests
+
+All tests must run without live USDA access.
+
+### Query tests
+
+* missing `q`
+* empty `q`
+* whitespace-only `q`
+* query below `minQueryLength`
+* valid normalized query
+* repeated internal whitespace
+
+### Cache tests
+
+* valid cache hit returns response
+* cache hit avoids provider fetch
+* cache hit increments hit count
+* cache hit increments daily cache hit
+* expired entry acts as miss
+* malformed JSON acts as miss
+* cache disabled skips cache read/write if that is the selected contract
+* normalized provider response is cached
+* raw provider payload is never passed to cache write
+
+### Runtime gate tests
+
+* safe mode blocks
+* online lookup disabled blocks
+* USDA provider disabled blocks
+* blocked gate increments `blocked_calls`
+* blocked gate does not increment `external_calls`
+* budget exhausted blocks
+* budget exhausted returns `budget_exceeded`
+
+### Configuration tests
+
+* missing `USDA_API_KEY` returns `configuration_error`
+* missing key does not call fetch
+* missing key does not increment external calls
+
+### Provider client tests
+
+* request URL uses USDA endpoint
+* API key is included only in provider request
+* POST body is controlled
+* fixed page size is used
+* allowed generic data types are used
+* timeout abort maps correctly
+* 429 maps correctly
+* 5xx maps correctly
+* invalid JSON maps correctly
+* invalid top-level shape maps correctly
+
+### Normalizer tests
+
+* valid Foundation food
+* valid SR Legacy food
+* valid FNDDS/Survey food if supported
+* calories/protein/carbohydrate/fat mapping
+* missing nutrient returns `null`
+* zero nutrient remains zero
+* invalid number returns `null`
+* malformed food is skipped
+* no raw nutrient arrays in output
+* attribution and approximate flags exist
+
+### Route tests
+
+* GET valid query success
+* POST returns method_not_allowed
+* invalid query returns invalid_query
+* cache hit success
+* provider success
+* provider timeout
+* provider rate limit
+* provider unavailable
+* no usable results returns not_found
+* `/v1/health` remains unchanged
+* `/v1/config` remains unchanged
+
+## 22. Testing Architecture
+
+Prefer dependency injection for:
 
 ```text
-worker/food-lookup/src/types.ts
-worker/food-lookup/src/cache.test.ts
-worker/food-lookup/src/usage.test.ts
-worker/food-lookup/src/runtimeConfig.test.ts
+fetch
+clock/date
+timeout
+runtime config
+provider client
 ```
 
-## Files to Modify
+Do not require a full dependency-injection framework.
 
-Expected:
+Simple function parameters or small interfaces are enough.
+
+Avoid global mutable mocks.
+
+Avoid tests that depend on execution order.
+
+## 23. README Updates
+
+Document:
 
 ```text
-worker/food-lookup/wrangler.toml
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/config.ts
-worker/food-lookup/src/index.test.ts
-worker/food-lookup/README.md
+USDA_API_KEY requirement
+data.gov key responsibility
+local .dev.vars setup
+Cloudflare secret setup
+safe-mode defaults
+runtime flags needed for provider calls
+generic endpoint
+example curl
+cache-first behavior
+daily budget behavior
+provider timeout behavior
+USDA attribution
+no raw payload storage
+no Android integration yet
 ```
 
-Optional if required:
+Example local file:
 
 ```text
-worker/food-lookup/src/errors.ts
-worker/food-lookup/package.json
-worker/food-lookup/package-lock.json
+worker/food-lookup/.dev.vars
 ```
 
-Only modify `package.json` if a test/dev dependency is truly required.
-
-Prefer avoiding new dependencies.
-
-## Files Not to Touch
-
-Do not modify:
+Example content:
 
 ```text
-app/src
-build.gradle.kts
-settings.gradle.kts
-gradle/libs.versions.toml
-gradle/
+USDA_API_KEY=your-local-key
 ```
 
-Do not modify Android UI, repositories, Room entities, DataStore, Navigation, or Gradle.
-
-Do not modify unrelated docs unless explicitly approved.
-
-## Out of Scope
-
-Do not implement:
+Explicitly say:
 
 ```text
-USDA provider
-Open Food Facts provider
-barcode lookup
-generic provider lookup endpoint
-GET /v1/foods/generic
-GET /v1/foods/search
-GET /v1/foods/barcode/:barcode
-Android remote lookup integration
-OkHttp
-Retrofit
-Android Settings changes
-custom domain
-Cloudflare Access
-user accounts
-cloud sync
-personal data storage
-paid runtime APIs
-external AI runtime APIs
+Do not commit .dev.vars.
 ```
 
-## Secrets Policy
+Do not put a real key in README.
 
-Do not commit:
+## 24. Manual QA Sequence
 
-```text
-.dev.vars
-.env
-.env.*
-Cloudflare API tokens
-USDA API key
-Open Food Facts credentials
-personal API keys
-```
+1. Apply local D1 migration.
+2. Set local USDA API key.
+3. Start Worker.
+4. Confirm `/v1/health`.
+5. Confirm `/v1/config`.
+6. Confirm provider call is blocked under conservative defaults.
+7. Enable required runtime flags locally.
+8. Call generic endpoint with `egg`.
+9. Inspect normalized DTO.
+10. Repeat same query.
+11. Confirm second request uses cache.
+12. Inspect D1 usage counters.
+13. Disable USDA provider.
+14. Confirm provider-disabled error.
+15. Test invalid query.
+16. Do not deploy.
 
-This phase should not require production secrets.
-
-If a local D1 database id is generated, do not treat it as a secret, but avoid unnecessary churn in docs.
-
-## Implementation Order
-
-1. Confirm branch and clean state.
-2. Inspect current Worker files.
-3. Update `wrangler.toml` with D1 binding.
-4. Add migration SQL.
-5. Add shared types/helpers.
-6. Add cache helper.
-7. Add usage/budget helper.
-8. Add runtime config helper.
-9. Update config endpoint only with safe public flags if needed.
-10. Add/update tests.
-11. Update Worker README with D1 local setup and migration commands.
-12. Run validation.
-13. Stop for review.
-
-## Validation Commands
+## 25. Quality Gates
 
 From repo root:
 
 ```bash
 git status --short --untracked-files=all
+git diff --name-status
+git diff --stat
+git diff --check
 ```
 
-From Worker folder:
+Android no-touch:
+
+```bash
+git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
+```
+
+Worker validation:
 
 ```bash
 cd worker/food-lookup
@@ -507,106 +905,92 @@ npm run typecheck
 npm test
 ```
 
-D1 local migration validation:
+D1 local validation:
 
 ```bash
 npx wrangler d1 migrations list gymledger-food-lookup --local
 npx wrangler d1 migrations apply gymledger-food-lookup --local
 ```
 
-If local D1 database has not been created yet, create it manually before applying migrations:
+Open Food Facts no-scope gate:
 
 ```bash
-npx wrangler d1 create gymledger-food-lookup
+grep -R -nE "openfoodfacts|world\.openfoodfacts\.org" src || true
 ```
 
-Then copy the generated `database_id` into `wrangler.toml`.
-
-Remote migration should not be applied until local tests pass and the user explicitly approves.
-
-## Quality Gates
-
-From repo root:
+Barcode no-scope gate:
 
 ```bash
-git diff --name-status
-git diff --stat
-git diff --check
-```
-
-Android no-touch gate:
-
-```bash
-git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
-```
-
-Provider no-call gate:
-
-```bash
-grep -R -nE "openfoodfacts|fdc\.nal\.usda|api\.nal\.usda\.gov|world\.openfoodfacts\.org" worker/food-lookup/src || true
-```
-
-Secret no-commit gate:
-
-```bash
-grep -R -nE "secret|token|password|api[_-]?key" worker/food-lookup \
-  --exclude README.md \
-  --exclude package-lock.json \
-  --exclude auth.ts || true
+grep -R -nE "barcode|foods/barcode" src || true
 ```
 
 Raw provider payload gate:
 
 ```bash
-grep -R -nE "rawPayload|raw_json|providerPayload|usdaResponse|openFoodFactsResponse" worker/food-lookup/src || true
+grep -R -nE "rawPayload|raw_json|providerPayload|usdaResponse" src || true
 ```
 
-## Manual QA
-
-No Android manual QA required.
-
-Worker manual QA after local validation:
+Secret no-commit gate:
 
 ```bash
-cd worker/food-lookup
-npm run dev
+git grep -nE "USDA_API_KEY\s*=|api_key=[A-Za-z0-9_-]{10,}" -- \
+  ':!worker/food-lookup/README.md' \
+  ':!docs/CURRENT_PHASE.md' \
+  ':!docs/IMPLEMENTATION_PLAN.md' || true
 ```
 
-Then in another terminal:
-
-```bash
-curl -i http://localhost:8787/v1/health
-curl -i http://localhost:8787/v1/config
-```
-
-Remote deploy is optional at the end of this phase and should happen only after local validation and review.
-
-## Acceptance Criteria
-
-Phase 17E.1 is complete when:
+## 26. Explicitly Out of Scope
 
 ```text
-D1 binding is configured.
-Initial migration exists.
-food_lookup_cache schema exists.
-usage_daily schema exists.
-runtime_config schema exists.
-Cache helpers exist and are tested.
-Usage/budget helpers exist and are tested.
-Runtime config fallback behavior exists and is tested.
-Existing health/config endpoints still pass.
-No provider calls exist.
-No Android files are modified.
-No secrets are committed.
-README documents D1 setup and validation.
-npm run typecheck passes.
-npm test passes.
+Open Food Facts
+barcode scanning
+packaged-food search
+Android networking
+Android DTOs
+Retrofit
+OkHttp
+Android settings UI
+remote Worker deployment
+custom domain
+user accounts
+personal cloud sync
+provider result persistence in Room
+food selection UI
+meal logging integration
 ```
 
-## Suggested Commit
+## 27. Stop Conditions
 
-```text
-feat: add worker cache and budget foundation
-```
+Stop before editing or continuing when:
 
-The user commits manually.
+* the existing Phase 17E.1 code differs materially from this plan
+* current cache helpers cannot support expiration safely
+* the USDA search response cannot reliably support per-100-g values
+* required nutrient identifiers are ambiguous
+* live network access would be required for unit tests
+* the implementation requires Android changes
+* the implementation requires an additional D1 migration
+* a remote migration or deploy is proposed
+* a real API key is found in tracked files
+* the implementation expands to Open Food Facts or barcode lookup
+* validation fails twice after focused corrections
+
+## 28. Final Builder Report
+
+The builder must stop after implementation and report:
+
+1. Files created.
+2. Files modified.
+3. Query and cache flow implemented.
+4. Runtime and budget gates implemented.
+5. USDA request strategy.
+6. Nutrient identifiers used.
+7. DTO shape.
+8. Error mapping.
+9. Test count and results.
+10. Typecheck result.
+11. D1 local migration result.
+12. Manual QA performed or not performed.
+13. Any behavior requiring user approval.
+14. Confirmation that Android was untouched.
+15. Confirmation that no key or raw provider payload was committed.
