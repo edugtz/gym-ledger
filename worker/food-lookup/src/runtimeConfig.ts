@@ -67,6 +67,11 @@ export async function getOpenFoodFactsProviderEnabled(env: Env): Promise<boolean
   return value === "true";
 }
 
+export async function getGenericFoodSearchEnabled(env: Env): Promise<boolean> {
+  const value = await getRuntimeConfig(env, "generic_food_search_enabled", DEFAULT_CONFIG.generic_food_search_enabled);
+  return value === "true";
+}
+
 export async function getBarcodeLookupEnabled(env: Env): Promise<boolean> {
   const value = await getRuntimeConfig(env, "barcode_lookup_enabled", DEFAULT_CONFIG.barcode_lookup_enabled);
   return value === "true";
@@ -74,7 +79,18 @@ export async function getBarcodeLookupEnabled(env: Env): Promise<boolean> {
 
 export async function getMaxDailyExternalCalls(env: Env): Promise<number> {
   const value = await getRuntimeConfig(env, "daily_external_call_budget", DEFAULT_CONFIG.daily_external_call_budget);
-  return parseInt(value, 10) || 25;
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return 25;
+  }
+  if (trimmed.includes(".")) {
+    return 25;
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (Number.isNaN(parsed)) {
+    return 25;
+  }
+  return parsed < 0 ? 0 : parsed;
 }
 
 export async function getCacheEnabled(env: Env): Promise<boolean> {

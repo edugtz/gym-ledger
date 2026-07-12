@@ -100,6 +100,7 @@ const enabledRuntimeValues: Record<string, string> = {
   safe_mode: "false",
   online_lookup_enabled: "true",
   usda_provider_enabled: "true",
+  generic_food_search_enabled: "true",
   cache_enabled: "true",
   cache_ttl_seconds: "86400",
   daily_external_call_budget: "25",
@@ -264,6 +265,104 @@ describe("handleGenericFoodLookup", () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.code).toBe("provider_disabled");
+      }
+    });
+
+    it("blocks when generic_food_search_enabled is false", async () => {
+      const { env, mockPrepare } = createMockEnv();
+      setupCacheMiss(mockPrepare, {
+        ...enabledRuntimeValues,
+        safe_mode: "false",
+        online_lookup_enabled: "true",
+        usda_provider_enabled: "true",
+        generic_food_search_enabled: "false",
+      });
+
+      const result = await handleGenericFoodLookup({ env, query: "egg", today });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("feature_disabled");
+      }
+    });
+
+    it("generic_food_search_enabled=false does not invoke provider", async () => {
+      const { env, mockPrepare } = createMockEnv();
+      let providerCalled = false;
+      setupCacheMiss(mockPrepare, {
+        ...enabledRuntimeValues,
+        safe_mode: "false",
+        online_lookup_enabled: "true",
+        usda_provider_enabled: "true",
+        generic_food_search_enabled: "false",
+      });
+
+      mockPrepare.mockImplementation((sql: string) => {
+        if (sql.includes("FROM food_lookup_cache")) {
+          return {
+            bind: () => ({
+              first: vi.fn().mockResolvedValue(null),
+              run: vi.fn().mockResolvedValue({}),
+            }),
+          };
+        }
+        if (sql.includes("INSERT OR REPLACE INTO usage_daily")) {
+          return {
+            bind: () => ({
+              run: vi.fn().mockResolvedValue({}),
+            }),
+          };
+        }
+        return {
+          bind: (...args: unknown[]) => {
+            const key = args[0] as string;
+            const values: Record<string, string> = {
+              ...enabledRuntimeValues,
+              generic_food_search_enabled: "false",
+            };
+            return {
+              first: vi.fn().mockResolvedValue(
+                values[key] !== undefined ? { value: values[key] } : null
+              ),
+              run: vi.fn().mockResolvedValue({}),
+            };
+          },
+        };
+      });
+
+      const result = await handleGenericFoodLookup({ env, query: "egg", today });
+      expect(result.ok).toBe(false);
+      expect(providerCalled).toBe(false);
+    });
+
+    it("generic_food_search_enabled=true proceeds to the next gate", async () => {
+      const { env, mockPrepare } = createMockEnv();
+      setupCacheMiss(mockPrepare, {
+        ...enabledRuntimeValues,
+        safe_mode: "false",
+        online_lookup_enabled: "true",
+        usda_provider_enabled: "true",
+        generic_food_search_enabled: "true",
+        daily_external_call_budget: "0",
+      });
+
+      const result = await handleGenericFoodLookup({ env, query: "egg", today });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("budget_exceeded");
+      }
+    });
+
+    it("cache hit bypasses generic_food_search_enabled=false gate", async () => {
+      const { env, mockPrepare } = createMockEnv();
+      setupCacheHit(mockPrepare, {
+        ...enabledRuntimeValues,
+        generic_food_search_enabled: "false",
+      }, cachedResponse);
+
+      const result = await handleGenericFoodLookup({ env, query: "egg", today });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.cached).toBe(true);
       }
     });
 

@@ -46,15 +46,32 @@ describe("GET /v1/health", () => {
 });
 
 describe("GET /v1/config", () => {
-  it("returns safe public config", async () => {
-    const res = await worker.fetch(makeRequest("/v1/config"), mockEnv);
+  function mockDbWithValues(values: Record<string, string>) {
+    const mockPrepare = vi.fn().mockImplementation((sql: string) => {
+      return {
+        bind: (...args: unknown[]) => {
+          const key = args[0] as string;
+          return {
+            first: vi.fn().mockResolvedValue(
+              values[key] !== undefined ? { value: values[key] } : null
+            ),
+          };
+        },
+      };
+    });
+    return { DB: { prepare: mockPrepare } as unknown as D1Database };
+  }
+
+  it("returns safe public config with conservative defaults when runtime_config is empty", async () => {
+    const envWithDb = mockDbWithValues({});
+    const res = await worker.fetch(makeRequest("/v1/config"), envWithDb);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(200);
     expect(body.ok).toBe(true);
 
     const data = (body as SuccessBody).data;
-    expect(data).toHaveProperty("onlineLookupAvailable");
+    expect(data).toHaveProperty("onlineLookupAvailable", false);
     expect(data).toHaveProperty("providers");
     expect(data).toHaveProperty("features");
     expect(data).toHaveProperty("minQueryLength", 3);
@@ -69,8 +86,61 @@ describe("GET /v1/config", () => {
     expect(features.barcodeLookup).toBe(false);
   });
 
+  it("reflects runtime overrides from D1", async () => {
+    const envWithDb = mockDbWithValues({
+      safe_mode: "false",
+      online_lookup_enabled: "true",
+      usda_provider_enabled: "true",
+      open_food_facts_provider_enabled: "true",
+      generic_food_search_enabled: "true",
+      barcode_lookup_enabled: "true",
+    });
+    const res = await worker.fetch(makeRequest("/v1/config"), envWithDb);
+    const body = (await res.json()) as ResponseBody;
+
+    expect(res.status).toBe(200);
+    const data = (body as SuccessBody).data;
+    expect(data.safeMode).toBe(false);
+    expect(data.onlineLookupAvailable).toBe(true);
+    expect((data.providers as Record<string, boolean>).usda).toBe(true);
+    expect((data.providers as Record<string, boolean>).openFoodFacts).toBe(true);
+    expect((data.features as Record<string, boolean>).genericFoodSearch).toBe(true);
+    expect((data.features as Record<string, boolean>).barcodeLookup).toBe(true);
+  });
+
+  it("does not expose budget, cache, or internal fields", async () => {
+    const envWithDb = mockDbWithValues({
+      daily_external_call_budget: "10",
+      cache_enabled: "false",
+      cache_ttl_seconds: "3600",
+    });
+    const res = await worker.fetch(makeRequest("/v1/config"), envWithDb);
+    const body = (await res.json()) as ResponseBody;
+    const data = (body as SuccessBody).data;
+
+    expect(data).not.toHaveProperty("daily_external_call_budget");
+    expect(data).not.toHaveProperty("cache_enabled");
+    expect(data).not.toHaveProperty("cache_ttl_seconds");
+    expect(data).not.toHaveProperty("dailyExternalCallBudget");
+    expect(data).not.toHaveProperty("cacheEnabled");
+    expect(data).not.toHaveProperty("cacheTtlSeconds");
+  });
+
+  it("does not expose secret values or secret-presence indicators", async () => {
+    const envWithDb = mockDbWithValues({});
+    const res = await worker.fetch(makeRequest("/v1/config"), envWithDb);
+    const bodyStr = JSON.stringify(await res.json());
+
+    expect(bodyStr).not.toContain("USDA_API_KEY");
+    expect(bodyStr).not.toContain("GYMLEDGER_API_KEY");
+    expect(bodyStr).not.toContain("OPEN_FOOD_FACTS_USER_AGENT");
+    expect(bodyStr).not.toContain("api_key");
+    expect(bodyStr).not.toContain("secret");
+  });
+
   it("returns method_not_allowed for POST", async () => {
-    const res = await worker.fetch(makeRequest("/v1/config", "POST"), mockEnv);
+    const envWithDb = mockDbWithValues({});
+    const res = await worker.fetch(makeRequest("/v1/config", "POST"), envWithDb);
     const body = (await res.json()) as ResponseBody;
 
     expect(res.status).toBe(405);
@@ -312,7 +382,14 @@ describe("GET /v1/foods/barcode/:barcode", () => {
     const healthBody = (await health.json()) as ResponseBody;
     expect(healthBody.ok).toBe(true);
 
-    const config = await worker.fetch(makeRequest("/v1/config"), mockEnv);
+    const mockPrepare = vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null),
+    });
+    const envWithDb = {
+      DB: { prepare: mockPrepare } as unknown as D1Database,
+    };
+    const config = await worker.fetch(makeRequest("/v1/config"), envWithDb);
     const configBody = (await config.json()) as ResponseBody;
     expect(configBody.ok).toBe(true);
   });
@@ -347,7 +424,15 @@ describe("authentication", () => {
     });
 
     it("config returns 200 without X-GymLedger-Key", async () => {
-      const res = await worker.fetch(makeRequest("/v1/config"), envWithKey);
+      const mockPrepare = vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnThis(),
+        first: vi.fn().mockResolvedValue(null),
+      });
+      const envWithDbKey = {
+        DB: { prepare: mockPrepare } as unknown as D1Database,
+        GYMLEDGER_API_KEY: "test-secret-key",
+      };
+      const res = await worker.fetch(makeRequest("/v1/config"), envWithDbKey);
       const body = (await res.json()) as ResponseBody;
       expect(res.status).toBe(200);
       expect(body.ok).toBe(true);

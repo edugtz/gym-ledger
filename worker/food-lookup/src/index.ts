@@ -1,10 +1,18 @@
-import { PUBLIC_CONFIG } from "./config";
+import { MIN_QUERY_LENGTH } from "./config";
 import { success, error } from "./response";
 import { Env as DBEnv } from "./db";
 import { validateApiKey } from "./auth";
 import { handleGenericFoodLookup } from "./services/genericFoodLookup";
 import { handleBarcodeFoodLookup } from "./services/barcodeFoodLookup";
 import { normalizeAndValidateBarcode } from "./barcode";
+import {
+  getSafeMode,
+  getOnlineLookupAvailable,
+  getUsdaProviderEnabled,
+  getOpenFoodFactsProviderEnabled,
+  getGenericFoodSearchEnabled,
+  getBarcodeLookupEnabled,
+} from "./runtimeConfig";
 
 export interface Env extends DBEnv {
   GYMLEDGER_API_KEY?: string;
@@ -29,7 +37,20 @@ export default {
       if (method !== "GET") {
         return error("method_not_allowed");
       }
-      return success(PUBLIC_CONFIG);
+      const config = {
+        onlineLookupAvailable: await getOnlineLookupAvailable(env),
+        providers: {
+          usda: await getUsdaProviderEnabled(env),
+          openFoodFacts: await getOpenFoodFactsProviderEnabled(env),
+        },
+        features: {
+          genericFoodSearch: await getGenericFoodSearchEnabled(env),
+          barcodeLookup: await getBarcodeLookupEnabled(env),
+        },
+        minQueryLength: MIN_QUERY_LENGTH,
+        safeMode: await getSafeMode(env),
+      };
+      return success(config);
     }
 
     if (pathname === "/v1/foods/generic") {
@@ -40,7 +61,7 @@ export default {
       const q = url.searchParams.get("q") ?? "";
       const trimmed = q.trim();
 
-      if (!trimmed || trimmed.length < PUBLIC_CONFIG.minQueryLength) {
+      if (!trimmed || trimmed.length < MIN_QUERY_LENGTH) {
         return error("invalid_query");
       }
 

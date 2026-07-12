@@ -6,6 +6,7 @@ import {
   getOnlineLookupAvailable,
   getUsdaProviderEnabled,
   getOpenFoodFactsProviderEnabled,
+  getGenericFoodSearchEnabled,
   getBarcodeLookupEnabled,
   getMaxDailyExternalCalls,
   getCacheEnabled,
@@ -195,5 +196,95 @@ describe("runtime config operations", () => {
 
     const result = await getCacheTtlSeconds({ DB: mockDb } as any);
     expect(result).toBe(86400);
+  });
+
+  it("gets generic food search enabled with default false", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(null)
+    });
+
+    const result = await getGenericFoodSearchEnabled({ DB: mockDb } as any);
+    expect(result).toBe(false);
+  });
+
+  it("gets generic food search enabled from database as true", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "true" })
+    });
+
+    const result = await getGenericFoodSearchEnabled({ DB: mockDb } as any);
+    expect(result).toBe(true);
+  });
+
+  it("gets generic food search enabled from database as false", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "false" })
+    });
+
+    const result = await getGenericFoodSearchEnabled({ DB: mockDb } as any);
+    expect(result).toBe(false);
+  });
+
+  it("daily_external_call_budget '0' resolves to 0", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "0" })
+    });
+
+    const result = await getMaxDailyExternalCalls({ DB: mockDb } as any);
+    expect(result).toBe(0);
+  });
+
+  it("daily_external_call_budget positive integer resolves exactly", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "10" })
+    });
+
+    const result = await getMaxDailyExternalCalls({ DB: mockDb } as any);
+    expect(result).toBe(10);
+  });
+
+  it("daily_external_call_budget negative integer resolves to 0", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "-5" })
+    });
+
+    const result = await getMaxDailyExternalCalls({ DB: mockDb } as any);
+    expect(result).toBe(0);
+  });
+
+  it("daily_external_call_budget malformed string resolves to 25", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "abc" })
+    });
+
+    const result = await getMaxDailyExternalCalls({ DB: mockDb } as any);
+    expect(result).toBe(25);
+  });
+
+  it("daily_external_call_budget empty string resolves to 25", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "" })
+    });
+
+    const result = await getMaxDailyExternalCalls({ DB: mockDb } as any);
+    expect(result).toBe(25);
+  });
+
+  it("daily_external_call_budget decimal resolves to 25", async () => {
+    mockPrepare.mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue({ value: "3.5" })
+    });
+
+    const result = await getMaxDailyExternalCalls({ DB: mockDb } as any);
+    expect(result).toBe(25);
   });
 });
