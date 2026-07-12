@@ -1,6 +1,7 @@
 import { PUBLIC_CONFIG } from "./config";
 import { success, error } from "./response";
 import { Env as DBEnv } from "./db";
+import { validateApiKey } from "./auth";
 import { handleGenericFoodLookup } from "./services/genericFoodLookup";
 import { handleBarcodeFoodLookup } from "./services/barcodeFoodLookup";
 import { normalizeAndValidateBarcode } from "./barcode";
@@ -43,6 +44,10 @@ export default {
         return error("invalid_query");
       }
 
+      if (!validateApiKey(request, env)) {
+        return error("unauthorized");
+      }
+
       const today = new Date().toISOString().slice(0, 10);
       const result = await handleGenericFoodLookup({ env, query: trimmed, today });
 
@@ -78,6 +83,10 @@ export default {
       const barcodeResult = normalizeAndValidateBarcode(decoded);
       if (!barcodeResult.ok) {
         return error("invalid_barcode");
+      }
+
+      if (!validateApiKey(request, env)) {
+        return error("unauthorized");
       }
 
       const today = new Date().toISOString().slice(0, 10);
