@@ -59,7 +59,8 @@ Verify tables exist:
 
 ## Runtime State
 
-Safe defaults restored after smoke testing.
+Target final runtime state: conservative defaults.
+Restoration verification: PENDING.
 
 Conservative defaults:
 - `safe_mode=true`
@@ -121,4 +122,5 @@ Rollback options:
 
 ## Cost
 
-$0/month for personal use on the free tier.
+Expected cost target: $0/month within Cloudflare free-tier limits.
+Production cost verification: PENDING.
