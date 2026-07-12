@@ -8,6 +8,8 @@ Phase 17E.2 — USDA Generic Food Lookup Provider.
 
 Phase 17E.3 — Open Food Facts Barcode Lookup Provider.
 
+Phase 17E.4 — Worker Deploy and Production Smoke Tests.
+
 ## Status
 
 USDA generic food lookup provider implemented.
@@ -16,20 +18,37 @@ Open Food Facts barcode lookup provider implemented.
 
 D1 cache and budget foundation implemented.
 
+Authentication wired into protected lookup routes.
+
 No personal data storage.
 
 No Android integration yet.
 
 No secrets should be committed.
 
+## Production Deployment
+
+See [docs/FOOD_LOOKUP_DEPLOYMENT.md](../../docs/FOOD_LOOKUP_DEPLOYMENT.md) for the deployment template and production details.
+
 ## Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /v1/health | Health check |
-| GET | /v1/config | Safe public config |
-| GET | /v1/foods/generic?q=<query> | USDA generic food lookup |
-| GET | /v1/foods/barcode/:barcode | Open Food Facts barcode lookup |
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| GET | /v1/health | Health check | Public |
+| GET | /v1/config | Safe public config | Public |
+| GET | /v1/foods/generic?q=<query> | USDA generic food lookup | Protected |
+| GET | /v1/foods/barcode/:barcode | Open Food Facts barcode lookup | Protected |
+
+## Authentication
+
+Protected endpoints (`/v1/foods/generic` and `/v1/foods/barcode/:barcode`) require the `X-GymLedger-Key` header when `GYMLEDGER_API_KEY` is configured.
+
+Behavior:
+- Missing or incorrect key → HTTP 401 `unauthorized`
+- Correct key → request proceeds to service
+- No key configured (local development) → request proceeds without auth
+
+Public endpoints (`/v1/health` and `/v1/config`) are always accessible without authentication.
 
 ## Setup
 
@@ -225,21 +244,54 @@ Use a clearly non-real example email for the User-Agent. Do not commit a real ad
 For production, use Cloudflare Workers secrets:
 
 ```bash
-wrangler secret put GYMLEDGER_API_KEY
-wrangler secret put USDA_API_KEY
-wrangler secret put OPEN_FOOD_FACTS_USER_AGENT
+npx wrangler secret put GYMLEDGER_API_KEY
+npx wrangler secret put USDA_API_KEY
+npx wrangler secret put OPEN_FOOD_FACTS_USER_AGENT
 ```
+
+Enter values interactively when prompted. Never commit secret values.
 
 Never commit `.dev.vars` or real API keys.
 
-## Deploy
+## Production Deployment
 
 ```bash
-npm run deploy
+cd worker/food-lookup
+npm ci
+npm run typecheck
+npm test
+npx wrangler deploy --dry-run
+npx wrangler deploy
 ```
 
-Requires Wrangler authentication with a Cloudflare account.
+Requires Wrangler authentication with the intended Cloudflare account.
 
-## Cost
+Before deploying, verify:
+- Cloudflare account identity: `npx wrangler whoami`
+- D1 database exists: `npx wrangler d1 list`
+- D1 database ID matches `wrangler.toml`
+- Required secrets are configured
 
-$0/month for personal use on the free tier.
+## Safe Runtime Defaults
+
+Production must begin and end in a conservative state:
+
+| Key | Safe Value | Description |
+|-----|------------|-------------|
+| safe_mode | true | Blocks all external provider calls |
+| online_lookup_enabled | false | Master switch for online lookups |
+| usda_provider_enabled | false | Enables USDA provider |
+| open_food_facts_provider_enabled | false | Enables Open Food Facts provider |
+| generic_food_search_enabled | false | Enables generic food search |
+| barcode_lookup_enabled | false | Enables barcode lookup feature |
+| daily_external_call_budget | 25 | Max external calls per UTC day |
+| cache_enabled | true | Enables D1 cache |
+| cache_ttl_seconds | 86400 | Cache TTL (24 hours) |
+
+## Rollback
+
+If production issues occur:
+1. Set `safe_mode=true` via D1
+2. Set `online_lookup_enabled=false`
+3. Set all provider and feature flags to `false`
+4. Redeploy the previous approved commit if needed

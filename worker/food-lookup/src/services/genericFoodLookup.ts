@@ -13,6 +13,7 @@ import {
   getSafeMode,
   getOnlineLookupAvailable,
   getUsdaProviderEnabled,
+  getGenericFoodSearchEnabled,
   getCacheEnabled,
   getCacheTtlSeconds,
   getMaxDailyExternalCalls,
@@ -106,6 +107,12 @@ export async function handleGenericFoodLookup(
   if (!usdaProviderEnabled) {
     await incrementBlockedCall(env, today);
     return { ok: false, code: "provider_disabled" };
+  }
+
+  const genericFoodSearchEnabled = await getGenericFoodSearchEnabled(env);
+  if (!genericFoodSearchEnabled) {
+    await incrementBlockedCall(env, today);
+    return { ok: false, code: "feature_disabled" };
   }
 
   const maxCalls = await getMaxDailyExternalCalls(env);

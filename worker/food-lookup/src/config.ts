@@ -12,16 +12,4 @@ export interface PublicConfig {
   safeMode: boolean;
 }
 
-export const PUBLIC_CONFIG: PublicConfig = {
-  onlineLookupAvailable: true,
-  providers: {
-    usda: false,
-    openFoodFacts: false,
-  },
-  features: {
-    genericFoodSearch: false,
-    barcodeLookup: false,
-  },
-  minQueryLength: 3,
-  safeMode: true,
-};
+export const MIN_QUERY_LENGTH = 3;

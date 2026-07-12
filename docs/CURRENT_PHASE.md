@@ -1,845 +1,907 @@
-# Phase 17E.3 — Open Food Facts Barcode Lookup Provider
+# Phase 17E.4 — Worker Deploy and Production Smoke Tests
 
 ## Objective
 
-Add packaged-food barcode lookup through Open Food Facts to the GymLedger Food Lookup Worker.
+Deploy the GymLedger Food Lookup Worker safely to Cloudflare Workers and verify its real production behavior.
 
-This phase builds on:
+This phase closes Phase 17E.
 
-* Phase 17E.1 — D1 Cache and Budget Foundation
-* Phase 17E.2 — USDA Generic Food Lookup Provider
+It builds on:
 
-The Worker must:
+- Phase 17E.1 — D1 Cache and Budget Foundation
+- Phase 17E.2 — USDA Generic Food Lookup Provider
+- Phase 17E.3 — Open Food Facts Barcode Lookup Provider
 
-* accept a barcode through a dedicated endpoint
-* normalize and validate the barcode
-* query Open Food Facts using its current product API
-* normalize the packaged-food result into a stable GymLedger DTO
-* return nutrition per 100 g and serving information when reliably available
-* include source attribution
-* mark externally sourced nutrition as approximate
-* use D1 cache before calling Open Food Facts
-* enforce safe mode, online lookup, provider, feature, and daily-budget gates
-* use a custom Open Food Facts User-Agent
-* handle provider failures with stable public errors
-* keep raw Open Food Facts payloads private
-* keep Android unchanged
+The phase must:
 
-This phase does not implement generic product text search.
-
-This phase does not implement search-as-you-type.
+- audit the deployment configuration
+- confirm production authentication behavior
+- configure required Cloudflare secrets
+- verify the production D1 binding
+- apply pending D1 migrations remotely
+- deploy to `workers.dev`
+- run production health and configuration smoke tests
+- run real USDA generic-food lookup
+- run real Open Food Facts barcode lookup
+- verify cache behavior
+- verify runtime kill switches
+- verify daily-budget behavior safely
+- verify authentication behavior
+- document the deployed endpoint for Phase 17F
+- preserve safe defaults when testing is complete
 
 This phase does not modify Android.
 
-This phase does not deploy the Worker.
+This phase does not add new provider features.
 
-## Product Quality Goal
-
-GymLedger should be able to resolve a known packaged-food barcode while remaining:
-
-* offline-first for saved food data
-* conservative with external calls
-* resilient to incomplete community data
-* explicit about attribution
-* safe when providers are unavailable
-* independent from the provider’s raw schema
-
-Cloud helps discover data.
-
-Room owns saved data.
-
-Open Food Facts data is community-maintained and may be incomplete or inaccurate.
-
-The Worker must normalize it but must not present it as guaranteed truth.
+This phase does not freeze the final Android integration contract. That belongs to Phase 17F / Backend B6.
 
 ## Current Phase
 
 ```text
-Phase 17E.3
-Backend Phase B4
-Open Food Facts Barcode Lookup Provider
+Phase 17E.4
+Backend Phase B5
+Worker Deploy and Production Smoke Tests
 ```
+
+## Product Principle
+
+```text
+Cloud helps discover data.
+Room owns saved data.
+```
+
+The deployed Worker remains a low-cost lookup, normalization, cache, and budget service.
+
+It must not store:
+
+- workouts
+- meals
+- body measurements
+- photos
+- user accounts
+- device identifiers
+- personal history
+- provider secrets in D1
+- API keys in source control
 
 ## Recommended AI Route
 
-* Planning: ChatGPT
-* Optional planning review: Qwen3.6 35B A3B local
-* Preferred builder: OpenCode Go Qwen3.7 Plus
-* Local builder alternative: Qwen Coder 30B A3B 5bit
-* Focused local patches: Devstral Small 2 24B 6bit
-* Heavy local review: Qwen3.6 27B 8bit
-* Debug escalation: OpenCode Go DeepSeek V4 Pro
-* Provider/API edge-case escalation: Codex
-* Gemini: not needed because this phase does not touch Android
+- Planning: ChatGPT
+- Preflight: Qwen Coder 30B A3B 5bit local
+- Preferred code-preparation builder: OpenCode Go + Qwen3.7 Plus
+- Cloudflare deployment guidance: Codex
+- Wrangler/D1 troubleshooting: DeepSeek V4 Pro
+- Focused documentation patches: Devstral Small 2 24B 6bit
+- Final repository review: ChatGPT through GitHub
+- Gemini: not needed because Android is out of scope
+
+Deployment commands and secret entry must remain user-controlled.
+
+No model may invent, print, store, or commit real secrets.
 
 ## Scope
 
-Implement only Open Food Facts barcode lookup.
-
-Required endpoint:
+Implement and execute only Backend Phase B5:
 
 ```text
+Worker Deploy and Production Smoke Tests
+```
+
+Required production endpoints:
+
+```text
+GET /v1/health
+GET /v1/config
+GET /v1/foods/generic?q=<query>
 GET /v1/foods/barcode/:barcode
 ```
 
-Example:
+Expected deployment domain:
 
 ```text
-GET /v1/foods/barcode/3017620422003
+https://gymledger-food-lookup.<cloudflare-subdomain>.workers.dev
 ```
 
-Use Open Food Facts product read API.
+The exact URL must come from Wrangler deployment output.
 
-Recommended current provider endpoint:
+Do not guess the Cloudflare subdomain.
+
+## Existing Deployment Configuration
+
+Current Worker configuration includes:
 
 ```text
-GET https://world.openfoodfacts.org/api/v3.6/product/<barcode>.json
+name = gymledger-food-lookup
+main = src/index.ts
+workers_dev = true
+D1 binding = DB
+database_name = gymledger-food-lookup
 ```
 
-Request only the fields required for the GymLedger DTO when supported by the provider.
+The configured `database_id` must be verified against the intended Cloudflare account before deployment.
 
-Do not implement Open Food Facts full-text search.
+Do not replace it blindly.
 
-Do not implement structured product search.
+## Required Pre-Deploy Audit
 
-Do not use legacy `/cgi/search.pl`.
-
-## Existing Foundation to Reuse
-
-Reuse the current Worker architecture:
+Before any remote write or deployment, inspect:
 
 ```text
+worker/food-lookup/wrangler.toml
+worker/food-lookup/package.json
 worker/food-lookup/src/index.ts
-worker/food-lookup/src/errors.ts
-worker/food-lookup/src/response.ts
-worker/food-lookup/src/cache.ts
-worker/food-lookup/src/usage.ts
+worker/food-lookup/src/auth.ts
+worker/food-lookup/src/config.ts
 worker/food-lookup/src/runtimeConfig.ts
-worker/food-lookup/src/types/foodLookup.ts
-worker/food-lookup/src/services/genericFoodLookup.ts
-worker/food-lookup/src/providers/usda.ts
+worker/food-lookup/src/errors.ts
+worker/food-lookup/migrations/
+worker/food-lookup/README.md
 ```
 
-Reuse:
+Confirm:
 
-* D1 cache
-* cache expiration
-* safe normalized JSON parsing
-* runtime configuration
-* daily usage counters
-* external call budget
-* stable response envelope
-* stable provider error patterns
-* query-independent UTC budget tracking
-* dependency-injected provider tests
+- Wrangler is authenticated to the intended Cloudflare account.
+- Worker name is correct.
+- D1 database exists in that account.
+- D1 database ID matches `wrangler.toml`.
+- No placeholder database ID remains.
+- No secret is stored in `wrangler.toml`.
+- `.dev.vars` remains ignored.
+- All unit tests pass.
+- Both provider implementations are present.
+- Runtime defaults remain conservative.
+- Existing endpoint contracts remain stable.
 
-Do not create duplicate cache, usage, config, or error systems.
+## Authentication Contract
 
-## Runtime Gates
+The Worker already contains an `X-GymLedger-Key` validation helper.
 
-Before making an Open Food Facts request, enforce:
+This phase must make the production authentication contract explicit and tested.
 
-1. `safe_mode`
-2. `online_lookup_enabled`
-3. `open_food_facts_provider_enabled`
-4. `barcode_lookup_enabled`
-5. `daily_external_call_budget`
+### Public endpoints
+
+```text
+GET /v1/health
+GET /v1/config
+```
+
+These remain publicly accessible and must not reveal secrets.
+
+### Protected endpoints
+
+```text
+GET /v1/foods/generic
+GET /v1/foods/barcode/:barcode
+```
+
+These require:
+
+```http
+X-GymLedger-Key: <configured secret>
+```
+
+when `GYMLEDGER_API_KEY` is configured.
+
+Production must configure `GYMLEDGER_API_KEY`.
 
 Required behavior:
 
-* If `safe_mode = true`, return `lookup_disabled`.
-* If `online_lookup_enabled = false`, return `lookup_disabled`.
-* If `open_food_facts_provider_enabled = false`, return `provider_disabled`.
-* If `barcode_lookup_enabled = false`, return `feature_disabled`.
-* If the daily budget is exhausted, return `budget_exceeded`.
-* Runtime and budget blocks increment `blocked_calls`.
-* Cache hits do not consume external-call budget.
-* `external_calls` increments only immediately before an actual provider request.
-* Cache misses increment `cache_misses`.
-* Cache hits increment cache entry and daily hit counters.
+- missing header returns `unauthorized`
+- incorrect header returns `unauthorized`
+- correct header allows request processing
+- API key must not appear in responses
+- API key must not appear in logs
+- API key must not be placed in query parameters
+- health and config remain public
+- provider secrets remain server-side
+- unauthorized requests must not invoke provider services
+- unauthorized requests must not increment external-call counters
 
-Conservative defaults remain unchanged:
+If current route code does not invoke the existing authentication helper, wiring it into lookup routes is required before deployment.
+
+Do not introduce:
+
+- user accounts
+- OAuth
+- JWT
+- sessions
+- per-user API keys
+- refresh tokens
+
+## Required Secrets and Environment Values
+
+Configure in Cloudflare:
+
+```text
+GYMLEDGER_API_KEY
+USDA_API_KEY
+OPEN_FOOD_FACTS_USER_AGENT
+```
+
+Rules:
+
+- `GYMLEDGER_API_KEY` must be a generated high-entropy secret.
+- `USDA_API_KEY` must be the real USDA key.
+- `OPEN_FOOD_FACTS_USER_AGENT` must identify GymLedger and provide an approved contact address.
+- Do not commit any secret value.
+- Do not paste secret values into documentation.
+- Do not put secret values in `wrangler.toml`.
+- Do not store secret values in D1.
+- Do not echo secret values in shared terminal transcripts.
+- Use interactive Wrangler secret entry.
+
+Commands:
+
+```bash
+npx wrangler secret put GYMLEDGER_API_KEY
+npx wrangler secret put USDA_API_KEY
+npx wrangler secret put OPEN_FOOD_FACTS_USER_AGENT
+```
+
+Do not pass secret values directly in shell command arguments.
+
+## Remote D1 Migration
+
+Phase 17E.1 created the required D1 migration.
+
+Before applying remotely:
+
+```bash
+npx wrangler d1 migrations list gymledger-food-lookup --remote
+```
+
+Review the output.
+
+Only apply migrations when:
+
+- the intended Cloudflare account is active
+- the database name is correct
+- the database ID is correct
+- the migration list is expected
+- no unexpected destructive migration appears
+
+Then:
+
+```bash
+npx wrangler d1 migrations apply gymledger-food-lookup --remote
+```
+
+This is a remote operation and must be executed manually by the user.
+
+Afterward verify that these tables exist:
+
+```text
+food_lookup_cache
+usage_daily
+runtime_config
+```
+
+Do not print secrets or unnecessary table contents.
+
+## Production Runtime Configuration
+
+Production must begin and end in a conservative state:
 
 ```text
 safe_mode = true
 online_lookup_enabled = false
+usda_provider_enabled = false
 open_food_facts_provider_enabled = false
+generic_food_search_enabled = false
 barcode_lookup_enabled = false
 daily_external_call_budget = 25
 cache_enabled = true
 cache_ttl_seconds = 86400
 ```
 
-Do not enable provider defaults globally.
-
-## Barcode Rules
-
-The route path contains the barcode:
+For smoke testing only, temporarily enable:
 
 ```text
-/v1/foods/barcode/:barcode
+safe_mode = false
+online_lookup_enabled = true
+usda_provider_enabled = true
+open_food_facts_provider_enabled = true
+generic_food_search_enabled = true
+barcode_lookup_enabled = true
+daily_external_call_budget = 25
+cache_enabled = true
+cache_ttl_seconds = 86400
 ```
 
-Required validation:
-
-* trim surrounding whitespace
-* decode the URL segment safely
-* digits only
-* reject empty values
-* reject non-numeric values
-* accept common GTIN lengths:
-
-    * 8
-    * 12
-    * 13
-    * 14
-* preserve leading zeroes
-* do not parse the barcode as a number
-* store and return it as a string
-* do not silently remove internal characters
-* do not guess or pad invalid barcodes
-* do not require a check-digit implementation unless preflight proves it is needed
-
-Examples:
+After smoke testing, restore:
 
 ```text
-3017620422003 -> valid
-012345678905 -> valid
-12345670 -> valid
-00012345600012 -> valid
-1234 -> invalid
-ABC123 -> invalid
+safe_mode = true
+online_lookup_enabled = false
+usda_provider_enabled = false
+open_food_facts_provider_enabled = false
+generic_food_search_enabled = false
+barcode_lookup_enabled = false
+daily_external_call_budget = 25
+cache_enabled = true
+cache_ttl_seconds = 86400
 ```
 
-Barcode normalization must be centralized and tested.
+Do not leave providers enabled unintentionally.
 
-## Cache Behavior
+## Deployment Preparation
 
-Cache key pattern:
+Run from `worker/food-lookup`:
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npx wrangler deploy --dry-run
+```
+
+Only continue when all commands pass.
+
+Then deploy:
+
+```bash
+npx wrangler deploy
+```
+
+Record:
+
+- Worker name
+- deployment identifier or version
+- deployment UTC timestamp
+- deployed Git commit SHA
+- resulting `workers.dev` URL
+- Wrangler version
+
+Do not record secrets or Cloudflare tokens.
+
+## Production Smoke-Test Sequence
+
+Set the deployed URL locally:
+
+```bash
+export GYMLEDGER_WORKER_URL="https://actual-worker-url.workers.dev"
+```
+
+Set the API key in the current shell only:
+
+```bash
+export GYMLEDGER_API_KEY="<local-shell-only-value>"
+```
+
+Do not commit or print the value.
+
+### 1. Health endpoint
+
+```bash
+curl -i "$GYMLEDGER_WORKER_URL/v1/health"
+```
+
+Expected:
+
+- HTTP 200
+- stable success envelope
+- no secret fields
+
+### 2. Public configuration endpoint
+
+```bash
+curl -i "$GYMLEDGER_WORKER_URL/v1/config"
+```
+
+Expected:
+
+- HTTP 200
+- only safe public configuration
+- no D1 database ID
+- no API keys
+- no Open Food Facts contact value
+- no secret runtime values
+
+### 3. Generic lookup without authentication
+
+```bash
+curl -i "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
+```
+
+Expected:
+
+- HTTP 401
+- error code `unauthorized`
+- no provider call
+- no external-call increment
+
+### 4. Barcode lookup without authentication
+
+```bash
+curl -i "$GYMLEDGER_WORKER_URL/v1/foods/barcode/3017620422003"
+```
+
+Expected:
+
+- HTTP 401
+- error code `unauthorized`
+- no provider call
+- no external-call increment
+
+### 5. Incorrect authentication key
+
+Send a deliberately incorrect value.
+
+Expected:
+
+- HTTP 401
+- error code `unauthorized`
+- no provider call
+- no external-call increment
+
+### 6. Safe-mode behavior
+
+With conservative defaults active, call a valid lookup using the correct API key.
+
+```bash
+curl -i \
+  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
+  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
+```
+
+Expected:
+
+- HTTP 503
+- error code `lookup_disabled`
+- provider is not called
+- `blocked_calls` increments
+- `external_calls` does not increment
+
+### 7. USDA production lookup
+
+Temporarily enable the required runtime flags.
+
+```bash
+curl -i \
+  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
+  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
+```
+
+Expected:
+
+- HTTP 200
+- source `USDA`
+- attribution `USDA FoodData Central`
+- `isApproximate = true`
+- normalized nutrient values
+- no raw USDA fields
+- no USDA key
+
+### 8. USDA cache verification
+
+Repeat the identical USDA request.
+
+Expected:
+
+- same normalized result
+- cache hit increments
+- no new external provider call
+- cache-entry hit count increments
+
+### 9. Open Food Facts production lookup
+
+```bash
+curl -i \
+  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
+  "$GYMLEDGER_WORKER_URL/v1/foods/barcode/3017620422003"
+```
+
+Expected:
+
+- HTTP 200
+- source `OPEN_FOOD_FACTS`
+- attribution includes Open Food Facts and ODbL
+- barcode remains a string
+- `product.externalId` matches the barcode
+- normalized product fields
+- no raw provider fields
+- no User-Agent value
+- no image fields
+
+### 10. Open Food Facts cache verification
+
+Repeat the identical barcode request.
+
+Expected:
+
+- cache hit
+- no additional provider call
+- stable DTO identity
+- cache-entry hit count increments
+
+### 11. Unknown valid barcode
+
+Use an intentionally unknown but structurally valid barcode.
+
+Expected:
+
+- HTTP 404
+- error code `not_found`
+- no raw provider response
+
+### 12. Invalid barcode
+
+```bash
+curl -i \
+  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
+  "$GYMLEDGER_WORKER_URL/v1/foods/barcode/1234"
+```
+
+Expected:
+
+- HTTP 400
+- error code `invalid_barcode`
+- no provider call
+- no external-call budget consumed
+
+### 13. Runtime switch verification
+
+Verify each switch separately:
 
 ```text
+safe_mode = true
+    -> lookup_disabled
+
+online_lookup_enabled = false
+    -> lookup_disabled
+
+usda_provider_enabled = false
+    -> provider_disabled
+
+open_food_facts_provider_enabled = false
+    -> provider_disabled
+
+barcode_lookup_enabled = false
+    -> feature_disabled
+```
+
+Restore the value after each focused test.
+
+## Budget Verification
+
+Do not generate 25 real provider calls to exhaust the budget.
+
+Preferred approach:
+
+1. Read the current UTC date.
+2. Read the current `external_calls` value for that date.
+3. Temporarily set `daily_external_call_budget` to `current_external_calls + 1`.
+4. Perform one fresh uncached lookup.
+5. Perform another different uncached lookup.
+6. Confirm the second request returns `budget_exceeded`.
+7. Restore `daily_external_call_budget = 25`.
+
+Expected blocked request behavior:
+
+- HTTP 429
+- error code `budget_exceeded`
+- `blocked_calls` increments
+- provider is not called
+- `external_calls` does not increment for the blocked request
+
+Do not delete or reset production usage rows unless absolutely necessary and explicitly documented.
+
+## D1 Verification
+
+Inspect only operational metadata.
+
+Verify:
+
+- a USDA cache entry exists
+- an Open Food Facts cache entry exists
+- cache keys use the expected format
+- source and lookup type are correct
+- cache hit counts increase
+- usage counters change by expected deltas
+- runtime configuration is restored safely
+
+Expected cache-key patterns:
+
+```text
+usda:generic:<normalized-query>
 open_food_facts:barcode:<barcode>
 ```
 
-Recommended values:
+Do not dump secrets or unnecessary full product payloads.
+
+## Safe-State Restoration
+
+Before phase completion, restore:
 
 ```text
-source = open_food_facts
-lookup_type = barcode
-query = normalized barcode
+safe_mode = true
+online_lookup_enabled = false
+usda_provider_enabled = false
+open_food_facts_provider_enabled = false
+generic_food_search_enabled = false
+barcode_lookup_enabled = false
+daily_external_call_budget = 25
+cache_enabled = true
+cache_ttl_seconds = 86400
 ```
 
-Cache lookup happens before provider gates.
+Then make one authenticated lookup.
 
-A valid, non-expired cache hit must:
-
-* return the normalized DTO
-* increment the cache entry hit count
-* increment daily `cache_hits`
-* avoid an Open Food Facts request
-* avoid incrementing `external_calls`
-
-A cache miss must:
-
-* increment daily `cache_misses`
-* evaluate runtime/provider/feature/budget gates
-* call Open Food Facts only when allowed
-* normalize the response
-* cache only the normalized Worker-owned DTO
-
-Expired, malformed, or structurally invalid cached data behaves as a cache miss.
-
-Never cache raw Open Food Facts payloads.
-
-## Provider Contract
-
-Use production base URL:
+Expected:
 
 ```text
-https://world.openfoodfacts.org
-```
-
-Current product endpoint:
-
-```text
-/api/v3.6/product/<barcode>.json
-```
-
-Use `GET`.
-
-No Open Food Facts API key is required for read-only product lookup.
-
-The request must include a custom User-Agent.
-
-Required environment value:
-
-```text
-OPEN_FOOD_FACTS_USER_AGENT
-```
-
-Recommended local value format:
-
-```text
-GymLedger/0.1 (contact@example.com)
-```
-
-Rules:
-
-* do not hardcode the user’s personal email
-* do not commit a real contact email unless explicitly approved
-* local `.dev.vars` may provide the User-Agent
-* production deployment will use a Worker secret or environment variable
-* missing User-Agent when provider execution is otherwise allowed returns `configuration_error`
-* do not expose the User-Agent in public responses
-* do not log request headers unnecessarily
-
-The provider request should ask only for required fields when the current API supports field selection.
-
-## Provider Traffic Rules
-
-Open Food Facts product reads are rate-limited.
-
-The implementation must:
-
-* use cache first
-* make at most one provider request per incoming lookup
-* avoid retries in the same request
-* avoid N+1 requests
-* avoid search endpoints
-* avoid search-as-you-type
-* use an explicit timeout
-* respect HTTP 429
-* treat provider-wide HTTP 503 as unavailable or rate-limited infrastructure
-* not download images
-* not proxy image bytes
-* not prefetch adjacent products
-* not crawl products
-
-No live-provider tests may run as part of unit tests.
-
-## Timeout
-
-Use `AbortController`.
-
-Recommended timeout:
-
-```text
-5 seconds
-```
-
-Keep timeout as a named constant or injectable provider option.
-
-Map timeout aborts to:
-
-```text
-provider_timeout
-```
-
-Do not map unrelated network failures to timeout.
-
-## Public DTO
-
-Add a stable packaged-food DTO owned by GymLedger.
-
-Suggested response:
-
-```json
-{
-  "barcode": "3017620422003",
-  "source": "OPEN_FOOD_FACTS",
-  "attribution": "Open Food Facts — ODbL",
-  "isApproximate": true,
-  "product": {
-    "externalId": "3017620422003",
-    "name": "Product name",
-    "genericName": null,
-    "brands": ["Brand"],
-    "quantity": "400 g",
-    "servingSize": "30 g",
-    "nutritionPer100g": {
-      "caloriesKcal": 539,
-      "proteinG": 6.3,
-      "carbohydrateG": 57.5,
-      "fatG": 30.9
-    },
-    "nutritionPerServing": {
-      "caloriesKcal": 162,
-      "proteinG": 1.9,
-      "carbohydrateG": 17.3,
-      "fatG": 9.3
-    }
-  }
-}
-```
-
-Required top-level fields:
-
-* `barcode`
-* `source`
-* `attribution`
-* `isApproximate`
-* `product`
-
-Required product fields:
-
-* `externalId`
-* `name`
-* `genericName`
-* `brands`
-* `quantity`
-* `servingSize`
-* `nutritionPer100g`
-* `nutritionPerServing`
-
-Required nutrition fields:
-
-* `caloriesKcal`
-* `proteinG`
-* `carbohydrateG`
-* `fatG`
-
-Rules:
-
-* `source` must be exactly `OPEN_FOOD_FACTS`.
-* `attribution` must identify Open Food Facts and ODbL.
-* `isApproximate` must be `true`.
-* Missing scalar fields use `null`.
-* Missing brands use an empty array.
-* Missing nutrition values use `null`.
-* Do not invent nutrient values.
-* Do not convert missing nutrients to zero.
-* Preserve valid numeric zero values.
-* Keep barcode values as strings.
-* Do not expose raw provider fields.
-* Do not expose image URLs in this phase.
-* Do not expose ingredients, allergens, Nutri-Score, NOVA, Eco-Score, or additives in this phase unless explicitly approved during preflight.
-* Do not expose provider debug metadata.
-
-## Product Name Rules
-
-Choose the product name using a centralized priority.
-
-Suggested priority:
-
-1. localized product name appropriate to provider response
-2. `product_name`
-3. `generic_name`
-4. safe fallback only when a meaningful provider name exists
-
-If no usable product name exists:
-
-* the product may still be returned if barcode and nutrition are usable, but name must not be fabricated
-* use an explicit safe fallback only if approved by the implementation plan
-* otherwise map unusable product data to `not_found` or `provider_error` according to response semantics
-
-Do not use the barcode itself as the product name.
-
-## Brand Rules
-
-Normalize brands into:
-
-```ts
-string[]
-```
-
-Preferred sources:
-
-* structured brand tags when available
-* comma-separated brand text only as fallback
-
-Required behavior:
-
-* trim values
-* remove empty values
-* avoid duplicates
-* preserve readable provider casing
-* do not expose taxonomy prefixes such as `en:` where not user-friendly
-
-## Nutrition Normalization
-
-Normalize per-100-g provider values from the provider’s nutriments structure.
-
-Target fields:
-
-```text
-caloriesKcal
-proteinG
-carbohydrateG
-fatG
-```
-
-Suggested Open Food Facts field priority:
-
-```text
-energy-kcal_100g
-proteins_100g
-carbohydrates_100g
-fat_100g
-```
-
-Energy rules:
-
-* prefer explicit kcal value
-* do not treat kJ as kcal
-* if kJ conversion is implemented:
-
-    * centralize it
-    * test it
-    * only use it when kcal is absent
-* reject non-finite values
-* preserve valid zeroes
-
-Per-serving values may use:
-
-```text
-energy-kcal_serving
-proteins_serving
-carbohydrates_serving
-fat_serving
-```
-
-Only return per-serving values when provided reliably.
-
-Do not derive per-serving values from serving text unless a tested, reliable numeric serving weight is available and such derivation is explicitly implemented.
-
-## Serving Information
-
-Return:
-
-```text
-quantity
-servingSize
-nutritionPerServing
-```
-
-Use provider values only.
-
-Do not:
-
-* parse arbitrary household measures
-* assume one package equals one serving
-* assume serving size equals 100 g
-* fabricate serving nutrition
-* convert units without a centralized tested implementation
-
-## Provider Response Semantics
-
-Treat the provider payload as `unknown`.
-
-Validate the top-level response shape before normalization.
-
-Distinguish:
-
-```text
-valid product found
-valid product not found
-invalid provider response
-provider unavailable
-provider rate limited
-provider timeout
-```
-
-Expected not-found semantics may be represented by:
-
-* provider status indicating no product
-* missing product with a valid not-found status
-* provider HTTP 404, depending on current endpoint behavior
-
-The builder must inspect the actual current API contract and encode one stable internal mapping.
-
-A malformed response must not be treated as `not_found`.
-
-## Public Errors
-
-Use the existing stable error response envelope.
-
-Required error codes:
-
-```text
-invalid_barcode
 lookup_disabled
-provider_disabled
-feature_disabled
-budget_exceeded
-provider_timeout
-provider_rate_limited
-provider_unavailable
-provider_error
-not_found
-configuration_error
 ```
 
-Suggested HTTP mapping:
+The phase is not complete until this safe state is verified.
+
+## Documentation Required
+
+Update:
 
 ```text
-invalid_barcode -> 400
-lookup_disabled -> 503
-provider_disabled -> 503
-feature_disabled -> 503
-budget_exceeded -> 429
-provider_timeout -> 504
-provider_rate_limited -> 429
-provider_unavailable -> 503
-provider_error -> 502
-not_found -> 404
-configuration_error -> 503
+docs/CURRENT_PHASE.md
+docs/IMPLEMENTATION_PLAN.md
+worker/food-lookup/README.md
 ```
 
-Do not expose:
+Create:
 
-* raw provider payloads
-* raw provider response bodies
-* stack traces
-* internal exception messages
-* D1 errors
-* request headers
-* contact details from the User-Agent
-* internal provider URLs
+```text
+docs/FOOD_LOOKUP_DEPLOYMENT.md
+```
+
+The deployment document may contain:
+
+- Worker name
+- public `workers.dev` base URL
+- deployment date
+- deployed commit SHA
+- Wrangler version
+- endpoint list
+- authentication header name
+- safe runtime defaults
+- smoke-test results
+- known limitations
+- rollback instructions
+
+It must not contain:
+
+- `GYMLEDGER_API_KEY`
+- USDA API key
+- Cloudflare API token
+- Cloudflare account ID
+- personal Open Food Facts contact value
+- secret values
+- complete private D1 dumps
+
+## Rollback Plan
+
+Before deployment, identify the currently deployed Worker version, if any.
+
+Required immediate safety controls:
+
+```text
+safe_mode = true
+online_lookup_enabled = false
+usda_provider_enabled = false
+open_food_facts_provider_enabled = false
+generic_food_search_enabled = false
+barcode_lookup_enabled = false
+```
+
+Rollback options:
+
+- redeploy the previously approved Git commit
+- use Cloudflare deployment/version rollback when available
+- restore the previous Worker deployment
+- disable all external lookup switches
+
+A production provider failure does not justify bypassing safety controls.
 
 ## Files Expected
 
-Likely files to create:
+Likely file to create:
 
 ```text
-worker/food-lookup/src/types/packagedFoodLookup.ts
-worker/food-lookup/src/types/packagedFoodLookup.test.ts
-worker/food-lookup/src/providers/openFoodFacts.ts
-worker/food-lookup/src/providers/openFoodFacts.test.ts
-worker/food-lookup/src/normalizers/openFoodFactsProduct.ts
-worker/food-lookup/src/normalizers/openFoodFactsProduct.test.ts
-worker/food-lookup/src/services/barcodeFoodLookup.ts
-worker/food-lookup/src/services/barcodeFoodLookup.test.ts
-worker/food-lookup/src/barcode.ts
-worker/food-lookup/src/barcode.test.ts
+docs/FOOD_LOOKUP_DEPLOYMENT.md
 ```
 
 Likely files to modify:
 
 ```text
+docs/CURRENT_PHASE.md
+docs/IMPLEMENTATION_PLAN.md
+worker/food-lookup/README.md
 worker/food-lookup/src/index.ts
 worker/food-lookup/src/index.test.ts
-worker/food-lookup/src/errors.ts
-worker/food-lookup/src/runtimeConfig.ts
-worker/food-lookup/src/runtimeConfig.test.ts
-worker/food-lookup/README.md
 ```
 
-Existing cache and usage files should be reused.
+`index.ts` and its tests should change only if authentication is not currently wired into protected routes.
 
-Modify them only when a genuinely reusable improvement is required.
+Possible file to create:
+
+```text
+worker/food-lookup/src/auth.test.ts
+```
+
+Possible files to modify only when required by a verified blocker:
+
+```text
+worker/food-lookup/src/auth.ts
+worker/food-lookup/wrangler.toml
+```
+
+Do not modify providers, normalizers, cache, usage, or DTO contracts unless a real production defect is reproduced and reported.
 
 ## Do Not Do
 
-* Do not modify Android.
-* Do not modify Gradle files.
-* Do not add Retrofit.
-* Do not add OkHttp.
-* Do not add Android barcode scanning.
-* Do not add camera permission.
-* Do not add ML Kit.
-* Do not add product text search.
-* Do not add search-as-you-type.
-* Do not use `/cgi/search.pl`.
-* Do not add Open Food Facts write operations.
-* Do not add provider authentication accounts or passwords.
-* Do not upload images.
-* Do not download or proxy product images.
-* Do not expose raw Open Food Facts payloads.
-* Do not store raw provider payloads.
-* Do not store personal data.
-* Do not add user accounts.
-* Do not add cloud meal storage.
-* Do not deploy.
-* Do not apply remote D1 changes.
-* Do not add a D1 migration unless a true blocker is discovered and reported.
-* Do not change safe defaults to enabled.
-* Do not implement Phase 17E.4 or Phase 17F.
-* Do not commit; the user commits manually.
+- Do not modify Android.
+- Do not add Retrofit.
+- Do not add OkHttp.
+- Do not add Android settings.
+- Do not begin Phase 17F.
+- Do not freeze the final Android contract.
+- Do not add provider search.
+- Do not add images.
+- Do not add user accounts.
+- Do not add personal cloud storage.
+- Do not expose any key.
+- Do not commit `.dev.vars`.
+- Do not commit Cloudflare tokens.
+- Do not hardcode production secrets.
+- Do not put USDA credentials in `wrangler.toml`.
+- Do not store provider secrets in D1.
+- Do not leave providers enabled after smoke testing.
+- Do not intentionally trigger provider rate limits.
+- Do not create a custom domain.
+- Do not modify the D1 schema unless a real blocker is discovered.
+- Do not commit automatically. The user commits manually.
 
 ## Acceptance Criteria
 
-* `GET /v1/foods/barcode/:barcode` exists.
-* Valid GTIN-8, UPC-A, EAN-13, and GTIN-14 strings are accepted.
-* Invalid barcode values return `invalid_barcode`.
-* Leading zeroes are preserved.
-* Cache lookup happens before provider gates.
-* Valid cache hit avoids Open Food Facts.
-* Cache hit increments cache hit counters.
-* Cache miss increments cache miss counters.
-* Safe mode blocks external requests.
-* Disabled online lookup blocks external requests.
-* Disabled Open Food Facts provider blocks external requests.
-* Disabled barcode feature blocks external requests.
-* Exhausted budget blocks external requests.
-* Blocked attempts increment `blocked_calls`.
-* Actual provider attempts increment `external_calls`.
-* Provider call uses an explicit timeout.
-* Provider call includes custom User-Agent.
-* Missing User-Agent returns `configuration_error` when provider execution is otherwise allowed.
-* Provider HTTP 429 maps to `provider_rate_limited`.
-* Provider temporary failure maps to `provider_unavailable`.
-* Provider timeout maps to `provider_timeout`.
-* Invalid provider responses map to `provider_error`.
-* Unknown barcode maps to `not_found`.
-* Valid product returns a Worker-owned DTO.
-* Barcode remains a string.
-* Nutrition is normalized per 100 g.
-* Serving nutrition is returned only when reliably available.
-* Missing nutrients return `null`.
-* Results include Open Food Facts attribution.
-* Results are marked approximate.
-* Only normalized DTOs are cached.
-* No raw provider payload is stored or returned.
-* Existing USDA generic lookup remains stable.
-* Existing `/v1/health` remains stable.
-* Existing `/v1/config` remains stable.
-* No Android files are modified.
-* No personal data or secrets are committed.
-* README documents local provider setup and validation.
-* `npm run typecheck` passes.
-* `npm test` passes.
+- Pre-deploy audit passes.
+- Phase 17E.3 is merged into `dev`.
+- `npm ci` passes.
+- `npm run typecheck` passes.
+- `npm test` passes.
+- Wrangler dry run passes.
+- Cloudflare account is verified.
+- D1 database identity is verified.
+- Required secret names are configured.
+- Remote migration applies successfully.
+- Worker deployment succeeds.
+- Production URL is documented.
+- Health endpoint succeeds publicly.
+- Config endpoint succeeds publicly.
+- Lookup endpoints require `X-GymLedger-Key`.
+- Missing or incorrect key returns `unauthorized`.
+- Unauthorized requests do not invoke providers.
+- Conservative runtime defaults block lookups.
+- USDA lookup succeeds during the controlled smoke window.
+- USDA repeat lookup uses cache.
+- Open Food Facts lookup succeeds during the controlled smoke window.
+- Open Food Facts repeat lookup uses cache.
+- Invalid barcode does not consume provider budget.
+- Unknown valid barcode returns `not_found`.
+- Feature and provider switches work.
+- Budget blocking is verified without abusive traffic.
+- Runtime defaults are restored.
+- No secret appears in Git, responses, or shared logs.
+- Android remains untouched.
+- Deployment and rollback documentation is complete.
 
 ## Validation Commands
 
-From repo root:
+From repository root:
 
 ```bash
 git status --short --untracked-files=all
 git diff --name-status
 git diff --stat
 git diff --check
-```
-
-Android no-touch gate:
-
-```bash
 git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
 ```
 
-Worker validation:
+From Worker:
 
 ```bash
 cd worker/food-lookup
+
+npm ci
 npm run typecheck
 npm test
+npx wrangler deploy --dry-run
 ```
 
-D1 local validation:
+Cloudflare identity and resources:
 
 ```bash
-npx wrangler d1 migrations list gymledger-food-lookup --local
-npx wrangler d1 migrations apply gymledger-food-lookup --local
+npx wrangler whoami
+npx wrangler d1 list
+npx wrangler d1 migrations list gymledger-food-lookup --remote
+npx wrangler secret list
 ```
 
-No text-search scope gate:
+Remote migration and deploy:
 
 ```bash
-grep -R -nE "cgi/search\.pl|/api/v[0-9.]+/search|search-as-you-type" src || true
+npx wrangler d1 migrations apply gymledger-food-lookup --remote
+npx wrangler deploy
 ```
 
-No write-operation gate:
+Secret safety:
 
 ```bash
-grep -R -nE "POST.*openfoodfacts|PUT.*openfoodfacts|user_id|password" src || true
+git status --short --untracked-files=all
+
+git grep -nE \
+  "GYMLEDGER_API_KEY=|USDA_API_KEY=|OPEN_FOOD_FACTS_USER_AGENT=.*@" \
+  -- ':!docs/CURRENT_PHASE.md' \
+     ':!docs/IMPLEMENTATION_PLAN.md' \
+     ':!worker/food-lookup/README.md' || true
 ```
 
-Raw provider payload gate:
+Review every match manually.
 
-```bash
-grep -R -nE "rawPayload|raw_json|providerPayload|openFoodFactsResponse|offResponse" src || true
-```
-
-Android package safety:
-
-```bash
-grep -R -n "com\.gymledger" app/src || true
-```
-
-## Manual QA
-
-Manual provider QA requires:
-
-* local D1 migrations
-* `.dev.vars`
-* a valid custom User-Agent
-* runtime flags enabled locally
-* no deployment
-
-Example `.dev.vars`:
-
-```text
-OPEN_FOOD_FACTS_USER_AGENT=GymLedger/0.1 (your-contact-email)
-```
-
-Do not commit `.dev.vars`.
-
-Enable local flags:
-
-```bash
-npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('safe_mode', 'false', datetime('now'));"
-
-npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('online_lookup_enabled', 'true', datetime('now'));"
-
-npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('open_food_facts_provider_enabled', 'true', datetime('now'));"
-
-npx wrangler d1 execute gymledger-food-lookup --local --command="INSERT OR REPLACE INTO runtime_config (key, value, updated_at) VALUES ('barcode_lookup_enabled', 'true', datetime('now'));"
-```
-
-Start:
-
-```bash
-cd worker/food-lookup
-npm run dev
-```
-
-Test:
-
-```bash
-curl -i http://localhost:8787/v1/health
-curl -i http://localhost:8787/v1/config
-curl -i http://localhost:8787/v1/foods/barcode/3017620422003
-curl -i http://localhost:8787/v1/foods/barcode/1234
-curl -i http://localhost:8787/v1/foods/barcode/ABC123
-curl -i -X POST http://localhost:8787/v1/foods/barcode/3017620422003
-```
-
-Repeat the valid barcode to verify cache behavior.
-
-Manual QA must confirm:
-
-* first allowed lookup may call Open Food Facts
-* second identical lookup is served from cache
-* cache hit does not increment external calls
-* barcode remains a string
-* leading zeroes are preserved
-* attribution is present
-* nutrition is normalized
-* no raw Open Food Facts fields appear
-* no User-Agent value appears in response
-* invalid barcode does not consume budget
-* disabling feature/provider blocks the external request
-
-Restore safe defaults after QA.
+Regex checks do not replace manual inspection.
 
 ## Stop Conditions
 
-Stop implementation and report before continuing if:
+Stop before deployment if:
 
-* the current Open Food Facts product API contract differs materially from this plan
-* v3 product read cannot provide required nutrition fields
-* provider not-found semantics are ambiguous
-* barcode normalization requires a product decision
-* current cache helpers cannot safely support the DTO
-* a D1 schema change appears necessary
-* Android changes appear necessary
-* a real contact email or credential appears in tracked files
-* tests require live network access
-* implementation expands into search, write operations, images, or barcode scanning
-* remote deploy or migration appears necessary
-* the first real validation error cannot be fixed in two focused attempts
+- Phase 17E.3 is not merged into `dev`
+- tests fail
+- typecheck fails
+- Wrangler dry run fails
+- authentication can be bypassed
+- lookup authentication is not wired
+- the wrong Cloudflare account is active
+- the configured D1 database does not match
+- an unexpected migration appears
+- a required secret is missing
+- a real secret is tracked
+- `/v1/config` exposes sensitive information
+- Android files changed
+- Cloudflare unexpectedly requires billing
+- provider code changed without review
 
-## Suggested Commit
+Stop after deployment and report before patching provider code if:
+
+- production payload differs materially from tested contracts
+- provider responses expose unexpected fields
+- cache behavior is incorrect
+- usage counters are incorrect
+- authentication fails
+- safe mode fails
+- runtime switches cannot be restored
+- rollback becomes necessary
+
+## Suggested Commits
+
+Planning:
 
 ```text
-feat: add Open Food Facts barcode lookup provider
+docs: plan phase 17e4 worker deployment
 ```
+
+Authentication preparation, when required:
+
+```text
+fix: enforce food lookup API authentication
+```
+
+Deployment record:
+
+```text
+docs: record food lookup worker deployment
+```
+
+## Code Preparation Status
+
+Authentication wiring complete. Protected lookup routes now require `X-GymLedger-Key` header.
+
+Pending: deployment, remote D1 migration, secret configuration, production smoke tests.
+
+See [docs/FOOD_LOOKUP_DEPLOYMENT.md](FOOD_LOOKUP_DEPLOYMENT.md) for deployment template.
