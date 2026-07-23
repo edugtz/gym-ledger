@@ -1,1184 +1,404 @@
-# Phase 17E.4 Implementation Plan — Worker Deploy and Production Smoke Tests
+# Phase 17F Implementation Plan — Android Remote Food Lookup Integration
 
-## 1. Goal
+## 1. Executive Decision
 
-Safely deploy the GymLedger Food Lookup Worker to Cloudflare Workers and verify production behavior.
+Implement **generic remote food search** by extending the existing `SmartFoodEntrySheet` with an optional "Online search" mode that calls the deployed GymLedger Worker. Keep everything offline-first and minimal:
 
-This phase must leave the deployed system in a conservative disabled state after smoke testing.
+- OkHttp client (approved by `ARCHITECTURE.md`/`PROJECT_SPEC`) behind an interface for testability.
+- App-owned DTOs decoded with existing `kotlinx-serialization-json`.
+- A `RemoteFoodLookupRepository` that orchestrates `/v1/config` (lazy, short TTL in-memory cache) and `/v1/foods/generic?q=`, gated by the existing `OnlineAssistanceSettings`.
+- A remote result maps to the existing `FoodReference` shape so the current Smart Entry selected/quantity/nutrition UI renders it with source and approximate badges, then `FoodRepository.create` saves it as a normal local `Food` after explicit confirmation.
+- No Room result cache. No barcode. No backend/Worker changes. No schema change. No new routes.
 
-No Android work is included.
+## 2. Discovery Findings
 
-## 2. Source of Truth
+- Package is `com.edu.gymledger`. Empty `com/gymledger/**` dirs exist (pre-existing; untouched).
+- UI event pattern: sealed `…UiEvent` over a CONFLATED `Channel`, collected in a `LaunchedEffect`.
+- No HTTP client today. `kotlinx-serialization-json` present and configured. Serialization plugin applies to module.
+- `FoodReference` domain model matches the remote per-100g shape (`caloriesPer100g: Int`, `proteinPer100g/carbsPer100g/fatPer100g: Double`, `sourceLabel: String`, `gramsPerUnit: Double?`, `unitLabel: String?`). Ideal reuse target for remote results (set `id = externalId`, `sourceLabel = attribution`, `gramsPerUnit = null`).
+- `FoodReferenceCalculator` scales per-100g → grams; reused unchanged.
+- `FoodRepository.create(...)` validates and persists per-serving `Food`; unchanged.
+- `SmartFoodEntryViewModel` is synchronous for reference search, uses `viewModelScope.launch` for save. Adding remote (suspend) search needs `viewModelScope` + IO; this stays consistent.
+- `AppContainer.settingsRepository` is `lateinit var ... private set`, initialized in `AppContainer.initialize(context)`.
+- `SettingsRepository` already exposes endpoint, key, toggles, and flow. No settings change needed.
+- Worker `/v1/config` is public; protected routes require `X-GymLedger-Key`.
+- Current production Worker: conservative defaults, `safeMode=true`, all features off — remote search will report disabled against live production by default.
 
-Read before editing or deploying:
+## 3. Current Repository State
 
-```text
-AGENTS.md
-AI_WORKFLOW.md
-docs/CURRENT_PHASE.md
-docs/IMPLEMENTATION_PLAN.md
-docs/BACKEND_CLOUD_PHASES.md
-worker/food-lookup/README.md
-worker/food-lookup/wrangler.toml
-worker/food-lookup/package.json
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/auth.ts
-worker/food-lookup/src/config.ts
-worker/food-lookup/src/runtimeConfig.ts
-worker/food-lookup/src/usage.ts
-worker/food-lookup/src/cache.ts
-worker/food-lookup/src/errors.ts
-worker/food-lookup/migrations/
+- minSdk 28, targetSdk 35, Java/Kotlin 17, AGP 8.7.0, Kotlin 2.0.21, KSP 2.0.21-1.0.26, Room 2.6.1, kotlinx-serialization 1.7.3.
+- Single `:app` module. Manual DI via `object AppContainer`.
+- DB version 6, `exportSchema = false`, `fallbackToDestructiveMigration`. No 17F schema change.
+- `AndroidManifest.xml` has no `INTERNET` permission today; must be added.
+- `buildFeatures { compose = true }`; no `buildConfig`. No BuildConfig injection needed (key is user-entered).
+- Existing tests: Robolectric + `runTest`; `kotlinx-coroutines-test` present. No existing ViewModel tests for nutrition features.
+
+## 4. Chosen Architecture and Rationale
+
+```
+SmartFoodEntryViewModel
+  -> SettingsRepository (Flow<OnlineAssistanceSettings>)
+  -> RemoteFoodLookupRepository
+       -> FoodLookupClient (interface)
+            -> OkHttpFoodLookupClient
+       -> in-memory config cache (TTL ~5 min)
+       -> Worker /v1/config, /v1/foods/generic
+  -> FoodReferenceRepository (local, unchanged)
+  -> FoodRepository.create (save local Food, unchanged)
 ```
 
-Inspect the repository before selecting exact files to modify.
+- Remote result → `RemoteFoodLookupResult` domain model → mapped to `FoodReference` so the existing selected/quantity/nutrition/Save flow is reused with minimal UI changes, and source/approximate badges already exist as chips.
+- A sealed `FoodLookupOutcome` keeps remote success/empty/error distinct and testable; ViewModel maps it to `SmartFoodEntryEvent`/UI state consistent with existing patterns.
+- Repository owns all gating logic (setting, key, config, safeMode, minQueryLength) so the ViewModel stays free of transport concerns.
 
-## 3. Phase Boundaries
+## 5. Dependency Decision
 
-Included:
+Add **OkHttp** only.
 
-- repository and deployment audit
-- lookup-route authentication preparation
-- Cloudflare identity verification
-- secret-name configuration
-- remote D1 migration
-- Worker deployment
-- production smoke tests
-- cache verification
-- runtime-switch verification
-- budget verification
-- safe-state restoration
-- deployment documentation
-- rollback documentation
+- Why not JDK `HttpURLConnection`: more boilerplate, manual timeouts, no clean interceptor seam, less ergonomic. Would still need a transport interface for tests.
+- Exact dependency: `com.squareup.okhttp3:okhttp` (version pinned in `gradle/libs.versions.toml`, e.g. `4.12.0`). No `okhttp-logging` in release; debug logging, if used, must never print the `X-GymLedger-Key` header.
+- Runtime cost: small, free, widely used on Android API 28+.
+- Testability: the `FoodLookupClient` interface lets unit tests inject a fake. OkHttp `Interceptor`/`MockWebServer` are optional and not required for unit tests. This plan uses a plain fake interface (no `MockWebServer` dependency needed this phase).
+- Lifecycle/coroutines: OkHttp calls are synchronous blocking calls executed on `Dispatchers.IO` from a `viewModelScope.launch`; `withTimeout(5.s)` wraps the call. No extra coroutine integration libraries needed.
 
-Excluded:
+No other dependencies may be added.
 
-- Android integration
-- Android API client
-- Android settings
-- DTO contract freeze
-- custom domain
-- analytics platform
-- monitoring platform
-- provider feature additions
-- provider text search
-- product images
-- personal cloud data
-- user accounts
-- D1 schema redesign
+## 6. Secret/Config Strategy
 
-## 4. Controlled Execution Stages
+- **Key source:** user-entered in Settings → `SettingsRepository.foodLookupApiKey` (DataStore). Already masked in UI. Never in source/tests/docs/logs.
+- **Endpoint source:** user-entered in Settings → `SettingsRepository.foodLookupEndpoint`. Blank → default public production URL constant in the remote client (non-secret).
+- **No BuildConfig/local.properties for secrets.** No gradle.properties secret.
+- **Header:** `X-GymLedger-Key: <key>` added by `OkHttpFoodLookupClient` only; never appended to the URL; never placed on `data` classes; never concatenated into error/log messages.
+- **Missing key:** repository treats remote assistance as unavailable; no network call.
+- **Release behavior:** identical to debug; no embedded key in any build.
+- **gitignore:** unchanged. `.env`, `*.secret`, `local.properties` already ignored. No new secret file created.
+- **Tests proving behavior:** a test asserts the request URL contains no key and the header contains the key; a test asserts error/exception messages and DTO `toString()` output do not contain the key value (the DTOs do not carry the key at all).
 
-Execute the phase in five stages.
+## 7. Exact Files to Create
 
-### Stage A — Repository and configuration audit
+Main source:
 
-No remote writes.
+- `app/src/main/java/com/edu/gymledger/data/remote/dto/FoodLookupConfigDto.kt` — `@Serializable` DTOs for `/v1/config` envelope + payload (`onlineLookupAvailable`, `providers`, `features`, `minQueryLength`, `safeMode`).
+- `app/src/main/java/com/edu/gymledger/data/remote/dto/GenericLookupResponseDto.kt` — `@Serializable` DTOs for generic success envelope + result item + `nutritionPer100g`.
+- `app/src/main/java/com/edu/gymledger/data/remote/FoodLookupClient.kt` — interface: `suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<Config>` and `suspend fun searchGeneric(baseUrl: String, apiKey: String, query: String): FoodLookupOutcome<List<RemoteResultDto>>`.
+- `app/src/main/java/com/edu/gymledger/data/remote/OkHttpFoodLookupClient.kt` — OkHttp implementation; `X-GymLedger-Key` header; 5s connect/read/write timeout; maps HTTP status + body to `FoodLookupOutcome`.
+- `app/src/main/java/com/edu/gymledger/data/remote/FoodLookupOutcome.kt` — sealed type: `Success<T>`, `Empty`, `Error(reason: FoodLookupError)` plus `FoodLookupError` enum/sealed mapping (Transport, Unauthorized, InvalidQuery, LookupDisabled, ProviderDisabled, FeatureDisabled, BudgetExceeded, ConfigurationError, ProviderError, MalformedResponse).
+- `app/src/main/java/com/edu/gymledger/domain/model/lookup/RemoteFoodLookupResult.kt` — domain model: `externalId`, `name`, `description?`, `dataType?`, `source`, `attribution`, `isApproximate`, `caloriesPer100g`, `proteinPer100g`, `carbohydratePer100g`, `fatPer100g`.
+- `app/src/main/java/com/edu/gymledger/domain/model/lookup/RemoteFoodReferenceMapper.kt` — maps `RemoteFoodLookupResult` → `FoodReference` (id=externalId, sourceLabel=attribution, gramsPerUnit=null, unitLabel=null) and maps to editable field defaults (100g quantity).
+- `app/src/main/java/com/edu/gymledger/data/repository/lookup/RemoteFoodLookupRepository.kt` — orchestrates config (in-memory cache + TTL), gating, generic search; returns `FoodLookupOutcome<List<RemoteFoodLookupResult>>` and exposes effective availability + minQueryLength.
 
-### Stage B — Authentication and deployment-readiness patch
+Tests:
 
-Local code changes only.
+- `app/src/test/java/com/edu/gymledger/data/remote/OkHttpFoodLookupClientTest.kt` — URL routing/encoding, header present + not in URL, success/empty/error mappings, malformed body, timeout.
+- `app/src/test/java/com/edu/gymledger/data/repository/lookup/RemoteFoodLookupRepositoryTest.kt` — config fallback, enabled/safeMode/feature-disabled gating, minQueryLength gating, settings/key gating, success/empty/error, cache freshness.
+- `app/src/test/java/com/edu/gymledger/domain/model/lookup/RemoteFoodReferenceMapperTest.kt` — per-100g → FoodReference mapping, name/attribution preserved, null gramsPerUnit.
+- `app/src/test/java/com/edu/gymledger/feature/nutrition/SmartFoodEntryViewModelRemoteTest.kt` — online setting off no call; missing key unavailable; too-short query no call; valid query states; prefill on select; no auto-save; manual after failure; key never in UI/error state.
 
-No deployment.
+Docs:
 
-### Stage C — Cloudflare resource and secret setup
+- `docs/CURRENT_PHASE.md` (replaced).
+- `docs/IMPLEMENTATION_PLAN.md` (replaced).
 
-Remote configuration performed manually by the user.
+## 8. Exact Files to Modify
 
-### Stage D — Deployment and production smoke testing
+- `gradle/libs.versions.toml` — add `okhttp = "4.12.0"` version + `okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }` library.
+- `app/build.gradle.kts` — `implementation(libs.okhttp)`.
+- `app/src/main/AndroidManifest.xml` — add `<uses-permission android:name="android.permission.INTERNET" />`.
+- `app/src/main/java/com/edu/gymledger/app/AppContainer.kt` — build one shared `OkHttpClient` (lazy val), expose `remoteFoodLookupRepository` using `settingsRepository`. Keep existing fields identical.
+- `app/src/main/java/com/edu/gymledger/feature/nutrition/SmartFoodEntryViewModel.kt` — add `remoteFoodLookupRepository` + `settingsRepository` deps; add online search state (availability, minQueryLength, results, loading, error, selected remote mode); gate remote calls; map outcome to events/existing selected-reference flow via the mapper; keep local reference path intact.
+- `app/src/main/java/com/edu/gymledger/feature/nutrition/SmartFoodEntryViewModelFactory.kt` — pass `remoteFoodLookupRepository` + `settingsRepository` (resolve from `AppContainer`).
+- `app/src/main/java/com/edu/gymledger/feature/nutrition/SmartFoodEntryScreen.kt` — add an "Online search" segment/toggle in the search section when remote assistance is available; show source + approximate badges for remote results (reuse the existing `sourceLabel` chip + "Approximate" chip from `SmartSelectedSection`); selecting a remote result reuses the existing selected/quantity/nutrition/Save UI; show a concise remote unavailable/error message that does not expose internals.
 
-Controlled external traffic.
+## 9. Exact Files Not to Touch
 
-### Stage E — Restore safe state and document deployment
+- `worker/**` (no backend/Worker changes).
+- `app/src/main/java/com/edu/gymledger/data/db/**` (no schema change).
+- `app/src/main/java/com/edu/gymledger/data/repository/FoodRepository.kt`.
+- `app/src/main/java/com/edu/gymledger/data/repository/SettingsRepository.kt`.
+- `app/src/main/java/com/edu/gymledger/data/repository/OnlineAssistanceSettings.kt`.
+- `app/src/main/java/com/edu/gymledger/data/repository/FoodReferenceRepository.kt`.
+- `app/src/main/java/com/edu/gymledger/data/reference/FoodReferenceSeed.kt`.
+- `app/src/main/java/com/edu/gymledger/domain/model/Food.kt`, `FoodReference.kt`, `FoodReferenceCalculator.kt`.
+- `app/src/main/java/com/edu/gymledger/navigation/**`.
+- `app/src/main/java/com/edu/gymledger/feature/settings/**`.
+- All non-nutrition features.
+- `app/src/main/java/com/gymledger/**`.
 
-No providers left enabled unintentionally.
+## 10. Data Flow
 
-Do not skip directly to deployment.
+1. `SmartFoodEntrySheet` opens; ViewModel collects `OnlineAssistanceSettings` and asks repository for effective availability (may trigger lazy config fetch from Worker, cached).
+2. If remote unavailable → only the existing local reference search is shown (current behavior).
+3. If remote available → search section shows an "Online search" toggle. With online mode selected, typing/triggering a search with query length ≥ `minQueryLength` calls `RemoteFoodLookupRepository.searchGeneric`.
+4. Repository checks setting + key + cached config gates; builds request to `/v1/foods/generic?q=<url-encoded-query>` with `X-GymLedger-Key`; runs on IO with timeout.
+5. `OkHttpFoodLookupClient` decodes body to `GenericLookupResponseDto`; maps errors by code/status/transport.
+6. Repository maps DTO results to `List<RemoteFoodLookupResult>`, returns `Success|Empty|Error`.
+7. ViewModel maps results to UI list; selecting one calls `RemoteFoodReferenceMapper` → `FoodReference`, reusing `selectReference`-equivalent logic (per-100g + 100g default quantity).
+8. User edits quantity/nutrition in the existing editable section; `save()` calls `FoodRepository.create` (no new save path, no auto-save).
 
-## 5. Stage A — Repository Audit
+## 11. Config-Fetch Behavior
 
-Start from updated `dev`:
+- Endpoint: `<baseUrl>/v1/config`, GET, **no** API key (public).
+- Fetched lazily on first remote search attempt; never at app startup.
+- Cached in-memory in `RemoteFoodLookupRepository` with a TTL of ~5 minutes; re-fetched when stale; reused across searches within TTL.
+- Conservative fallback on any failure/timeout/malformed body: `onlineLookupAvailable=false`, `genericFoodSearch=false`, `safeMode=true`, `minQueryLength=3`.
+- No config call per keystroke. No stale config used beyond TTL.
+- When `onlineFoodLookupEnabled` becomes `false`, no config or search calls occur regardless of cache.
+
+## 12. Generic-Search Flow
+
+- Route: `<baseUrl>/v1/foods/generic?q=<encoded>`, GET, with `X-GymLedger-Key`.
+- Query must be trimmed and length ≥ cached/default `minQueryLength` (default 3); below → no remote call.
+- Connect/read/write timeout = 5s; wrapped in `withTimeout`.
+- Decode success envelope; `data.results` may be empty → `Empty` outcome.
+- Map each result's `nutritionPer100g` into per-100g domain model.
+- A successful search does not persist anything; only Save persists.
+
+## 13. Result-to-Local-Food Mapping
+
+- `RemoteFoodLookupResult` → `FoodReference` (id=externalId; name; caloriesPer100g; protein/carbs/fat per 100g; sourceLabel=attribution; gramsPerUnit=null; unitLabel=null).
+- Default quantity = 100g; `FoodReferenceCalculator.calculateFromGrams(ref, 100.0)` yields editable per-serving defaults.
+- `save()` reuses the existing path: `foodRepository.create(name, caloriesPerServing = calories, servingSize = grams, protein, carbs, fat)`.
+- All values remain editable; Save is the only persistence step.
+
+## 14. Error Mapping
+
+| Source | Outcome | User message (English, no internals) |
+|---|---|---|
+| No network / `IOException` not a timeout | `Error(Transport)` | "Couldn't reach the lookup service. Check your connection and try again." |
+| Timeout | `Error(Transport)` | same |
+| Malformed JSON | `Error(MalformedResponse)` | "Lookup service returned an unexpected response." |
+| 401 / missing local key | `Error(Unauthorized)` | "Online lookup isn't configured. Add an API key in Settings." |
+| 400 `invalid_query` | `Error(InvalidQuery)` | "Enter a longer search term." |
+| 429 `budget_exceeded` | `Error(BudgetExceeded)` | "Daily lookup limit reached. Try again tomorrow or add the food manually." |
+| 503 `lookup_disabled` | `Error(LookupDisabled)` | "Online lookup is temporarily disabled." |
+| 503 `provider_disabled` | `Error(ProviderDisabled)` | "Online lookup is temporarily unavailable." |
+| 503 `feature_disabled` | `Error(FeatureDisabled)` | same |
+| 503 `configuration_error` | `Error(ConfigurationError)` | "Online lookup is temporarily unavailable." |
+| Body `provider_error` | `Error(ProviderError)` | "Online lookup is temporarily unavailable." |
+| `results` empty | `Empty` | "No foods found online. Try another term or add it manually." |
+
+- Developer diagnostics (logcat) must omit the API key entirely. Only non-sensitive path/status/code are logged.
+- Error `Throwable.message` and DTO `toString()` must not include the key.
+
+## 15. ViewModel/UI-State Changes
+
+- `SmartFoodEntryUiState` gains: `isOnlineAvailable: Boolean`, `minQueryLength: Int`, `onlineMode: Boolean`, `onlineResults: List<RemoteFoodLookupResult>`, `onlineLoading: Boolean`, `onlineError: String?`. (Keep within one state class; do not split into micro-files.)
+- New `SmartFoodEntryEvent`: reuse existing `SaveSucceeded`/`Error`; remote errors surface via `onlineError` in state rather than a snackbar to keep the sheet self-contained.
+- Search section: when `isOnlineAvailable`, render a segmented switch with "Local reference" / "Online search". When online mode is selected, show remote results list and the source chip on each row.
+- Selected section: reuse `SmartSelectedSection` (already shows `sourceLabel` + "Approximate" chips) — the mapper ensures remote results populate `sourceLabel` with attribution.
+- Quantity/nutrition/save: unchanged.
+- If `!isOnlineAvailable`, the toggle is omitted and behavior is identical to today.
+
+## 16. Test Plan by Layer
+
+Transport/client (`OkHttpFoodLookupClientTest`, fake transport via interface):
+- URL: `<baseUrl>/v1/foods/generic?q=egg` with proper percent-encoding.
+- API key header present; URL has no key.
+- Success body decodes including `nutritionPer100g`.
+- Empty `results` → `Empty`.
+- 400 → `InvalidQuery`; 401 → `Unauthorized`; 429 → `BudgetExceeded`; 503 with each known code → mapped; `provider_error` body → `ProviderError`.
+- Malformed body → `MalformedResponse`.
+- Timeout/IOException → `Transport`.
+- Config route: `<baseUrl>/v1/config`, no key header; success/fallback.
+
+Config (`RemoteFoodLookupRepositoryTest`):
+- Config fetch failure/malformed → conservative fallback.
+- Config success with `onlineLookupAvailable && genericFoodSearch && !safeMode` → available.
+- `safeMode=true` → unavailable.
+- `features.genericFoodSearch=false` → unavailable.
+- `minQueryLength` value honored.
+- Cache reused within TTL, re-fetched when stale.
+
+Repository / gating (`RemoteFoodLookupRepositoryTest`):
+- Setting disabled → no config/search call.
+- Key blank → unavailable, no call.
+- Query shorter than `minQueryLength` → no call.
+- Valid query → `Success`/`Empty`/`Error` mapping.
+- Endpoint blank → default base URL used.
+
+ViewModel (`SmartFoodEntryViewModelRemoteTest`, fake repo + fake settings flow):
+- Online setting disabled → toggle absent, no remote call.
+- Missing key → unavailable.
+- Too-short query → no remote call.
+- Valid query → loading/success/empty/error states.
+- Selecting a remote result prefills editable fields.
+- Editable fields remain editable; no save until explicit call.
+- Manual flow available after remote failure.
+- Key value never present in UI state or error strings.
+
+Security (across layers):
+- No key in URL, DTOs, error strings; no real network in unit tests.
+
+## 17. Implementation Order
+
+1. Add OkHttp dependency + INTERNET permission; run clean assembleDebug to confirm empty wiring compiles.
+2. Create DTOs + `FoodLookupOutcome`/`FoodLookupError`.
+3. Create `FoodLookupClient` interface + `OkHttpFoodLookupClient`; write `OkHttpFoodLookupClientTest` with a fake transport.
+4. Create `RemoteFoodLookupResult` + `RemoteFoodReferenceMapper` + tests.
+5. Create `RemoteFoodLookupRepository` with config cache + tests.
+6. Wire `AppContainer` (shared `OkHttpClient` + repository).
+7. Extend `SmartFoodEntryViewModel` + factory with online mode + gating + prefill; add ViewModel tests.
+8. Extend `SmartFoodEntryScreen` with online toggle, result rows, source/approximate badges, unavailable/error copy.
+9. Run full validation; fix first real error only; no unrelated refactors.
+10. Manual QA; record results.
+
+## 18. Risks and Build Traps
+
+- `@Serializable` DTOs must use nullable/`default` fields to tolerate minor Worker field changes; decode ignores unknown keys (configure `Json { ignoreUnknownKeys = true; isLenient = true }`).
+- OkHttp call must be invoked off the main thread; always wrap in `withContext(Dispatchers.IO)` / `withTimeout`.
+- Avoid importing OkHttp logging interceptor in release builds; if used in debug, never log the key header.
+- Don't accidentally trigger config/search when only `onlineFoodLookupEnabled` toggled on but key blank — gating order matters (setting → key → config → query length).
+- Don't URL-encode the leading `?` of the query parameter; only encode the query value.
+- Don't mutate `FoodReference` data class shape (out of scope); only construct instances.
+- Don't add a `MockWebServer` dependency — fake the client interface instead.
+- Don't add barcode fields even though the remote result DTO might conceptually allow it.
+- Network permission present only in debug is fine if lint complains about release; but add it unconditionally so release builds can use the feature once enabled by the user.
+
+## 19. Validation Plan
+
+From repo root:
 
 ```bash
-cd ~/AndroidStudioProjects/GymLedger
-
-git checkout dev
-git pull --ff-only origin dev
-git log --oneline --decorate -5
-git status --short
+./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
 ```
 
-Confirm Phase 17E.3 is merged.
-
-Create the planning branch:
+Targeted unit tests:
 
 ```bash
-git checkout -b 17e4-worker-deploy-smoke-plan
+./gradlew testDebugUnitTest --tests "com.edu.gymledger.data.remote.*" --tests "com.edu.gymledger.data.repository.lookup.*" --tests "com.edu.gymledger.domain.model.lookup.*" --tests "com.edu.gymledger.feature.nutrition.SmartFoodEntryViewModelRemoteTest"
 ```
 
-Run baseline Worker validation:
-
-```bash
-cd worker/food-lookup
-
-npm ci
-npm run typecheck
-npm test
-npx wrangler deploy --dry-run
-```
-
-Confirm Android is untouched:
-
-```bash
-cd ../..
-
-git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
-```
-
-Inspect tracked files for potential secrets:
-
-```bash
-git status --short --untracked-files=all
-
-git grep -nE \
-  "GYMLEDGER_API_KEY=|USDA_API_KEY=|OPEN_FOOD_FACTS_USER_AGENT=.*@" \
-  -- ':!docs/CURRENT_PHASE.md' \
-     ':!docs/IMPLEMENTATION_PLAN.md' \
-     ':!worker/food-lookup/README.md' || true
-```
-
-Review matches manually.
-
-Placeholder examples are not necessarily secrets, but every result must be inspected.
-
-## 6. Authentication Audit
-
-Intended endpoint policy:
-
-```text
-/v1/health                         public
-/v1/config                         public
-/v1/foods/generic                  protected
-/v1/foods/barcode/:barcode         protected
-```
-
-Inspect whether `validateApiKey()` is called by both lookup routes before invoking their services.
-
-Required request flow for generic lookup:
-
-```text
-route match
--> method validation
--> query validation
--> API-key validation
--> service invocation
-```
-
-Required request flow for barcode lookup:
-
-```text
-route match
--> method validation
--> strict path and barcode validation
--> API-key validation
--> service invocation
-```
-
-This preserves existing input errors while preventing provider calls without authentication.
-
-Required behavior:
-
-- malformed generic query returns `invalid_query`
-- malformed barcode route returns `invalid_barcode`
-- valid lookup without configured header returns `unauthorized`
-- valid lookup with wrong header returns `unauthorized`
-- valid lookup with correct header proceeds
-- health remains public
-- config remains public
-- unauthorized requests do not call lookup services
-- unauthorized requests do not update provider counters
-
-## 7. Existing Authentication Helper
-
-Current helper behavior must be inspected.
-
-Expected contract:
-
-```ts
-validateApiKey(request, env)
-```
-
-When `GYMLEDGER_API_KEY` is configured:
-
-- missing `X-GymLedger-Key` returns false
-- wrong `X-GymLedger-Key` returns false
-- correct `X-GymLedger-Key` returns true
-
-When no key is configured:
-
-- local-development behavior may continue allowing requests
-- production must not rely on this fallback
-- production safety requires configuring the secret
-
-Do not introduce accounts, JWTs, sessions, or OAuth.
-
-## 8. Authentication Code Changes
-
-Likely modify:
-
-```text
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/index.test.ts
-```
-
-Potentially create:
-
-```text
-worker/food-lookup/src/auth.test.ts
-```
-
-Modify `auth.ts` only when an actual defect is discovered.
-
-Suggested route-level pattern:
-
-```ts
-if (!validateApiKey(request, env)) {
-  return error("unauthorized");
-}
-```
-
-Apply only to the lookup endpoints.
-
-Do not protect `/v1/health` or `/v1/config`.
-
-## 9. Authentication Test Requirements
-
-Add tests for:
-
-### Helper tests
-
-- configured key with missing header
-- configured key with incorrect header
-- configured key with correct header
-- no configured key preserves documented local behavior
-
-### Generic route tests
-
-- valid query without key returns unauthorized
-- valid query with wrong key returns unauthorized
-- valid query with correct key reaches service behavior
-- invalid query remains invalid_query
-- unauthorized request does not invoke provider path
-
-### Barcode route tests
-
-- valid barcode without key returns unauthorized
-- valid barcode with wrong key returns unauthorized
-- valid barcode with correct key reaches service behavior
-- invalid barcode remains invalid_barcode
-- nested path remains invalid_barcode
-- unauthorized request does not invoke provider path
-
-### Public route tests
-
-- health remains public
-- config remains public
-
-Keep all existing tests green.
-
-## 10. Wrangler Configuration Audit
-
-Inspect:
-
-```text
-worker/food-lookup/wrangler.toml
-```
-
-Verify:
-
-```toml
-name = "gymledger-food-lookup"
-main = "src/index.ts"
-workers_dev = true
-```
-
-Verify:
-
-- `compatibility_date` is accepted by the installed Wrangler version
-- D1 binding name is `DB`
-- database name is `gymledger-food-lookup`
-- database ID belongs to the intended account
-- `[vars]` contains no secrets
-- no provider key is committed
-- no API key is committed
-
-Only modify `wrangler.toml` for a verified deployment blocker.
-
-## 11. Cloudflare Identity Verification
-
-Run manually:
-
-```bash
-cd worker/food-lookup
-
-npx wrangler whoami
-npx wrangler d1 list
-```
-
-Confirm:
-
-- authenticated account is the intended account
-- D1 database `gymledger-food-lookup` exists
-- listed database ID matches `wrangler.toml`
-
-Do not commit Cloudflare account identifiers.
-
-Stop if the account or database does not match.
-
-## 12. Required Production Secret Names
-
-Required:
-
-```text
-GYMLEDGER_API_KEY
-USDA_API_KEY
-OPEN_FOOD_FACTS_USER_AGENT
-```
-
-List configured secret names:
-
-```bash
-npx wrangler secret list
-```
-
-Set missing values interactively:
-
-```bash
-npx wrangler secret put GYMLEDGER_API_KEY
-npx wrangler secret put USDA_API_KEY
-npx wrangler secret put OPEN_FOOD_FACTS_USER_AGENT
-```
-
-The user enters values manually.
-
-Do not include values in:
-
-- source code
-- Markdown files
-- Wrangler configuration
-- shell history
-- Git commits
-- D1
-- model prompts
-- shared logs
-
-## 13. Remote Migration Audit
-
-List pending migrations:
-
-```bash
-npx wrangler d1 migrations list gymledger-food-lookup --remote
-```
-
-Expected migration:
-
-```text
-0001_cache_budget_foundation.sql
-```
-
-Inspect the migration before applying.
-
-Apply only when the correct account and database are verified:
-
-```bash
-npx wrangler d1 migrations apply gymledger-food-lookup --remote
-```
-
-After applying, verify schema names only:
-
-```text
-food_lookup_cache
-usage_daily
-runtime_config
-```
-
-Do not dump secret values or unnecessary normalized payloads.
-
-## 14. Production Runtime Configuration States
-
-### Required safe state
-
-```text
-safe_mode=true
-online_lookup_enabled=false
-usda_provider_enabled=false
-open_food_facts_provider_enabled=false
-generic_food_search_enabled=false
-barcode_lookup_enabled=false
-daily_external_call_budget=25
-cache_enabled=true
-cache_ttl_seconds=86400
-```
-
-### Temporary smoke-test state
-
-```text
-safe_mode=false
-online_lookup_enabled=true
-usda_provider_enabled=true
-open_food_facts_provider_enabled=true
-generic_food_search_enabled=true
-barcode_lookup_enabled=true
-daily_external_call_budget=25
-cache_enabled=true
-cache_ttl_seconds=86400
-```
-
-Every remote D1 command must include:
-
-```text
---remote
-```
-
-Review every SQL statement before executing it.
-
-Prefer one reviewed multi-statement transaction when supported.
-
-## 15. Safe-State SQL Template
-
-Use reviewed commands similar to:
-
-```bash
-npx wrangler d1 execute gymledger-food-lookup --remote --command="
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('safe_mode', 'true', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('online_lookup_enabled', 'false', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('usda_provider_enabled', 'false', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('open_food_facts_provider_enabled', 'false', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('generic_food_search_enabled', 'false', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('barcode_lookup_enabled', 'false', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('daily_external_call_budget', '25', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('cache_enabled', 'true', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('cache_ttl_seconds', '86400', datetime('now'));
-"
-```
-
-Confirm quoting and Wrangler compatibility during preflight.
-
-Do not execute before database identity is verified.
-
-## 16. Smoke-State SQL Template
-
-Use reviewed commands similar to:
-
-```bash
-npx wrangler d1 execute gymledger-food-lookup --remote --command="
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('safe_mode', 'false', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('online_lookup_enabled', 'true', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('usda_provider_enabled', 'true', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('open_food_facts_provider_enabled', 'true', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('generic_food_search_enabled', 'true', datetime('now'));
-
-INSERT OR REPLACE INTO runtime_config (key, value, updated_at)
-VALUES ('barcode_lookup_enabled', 'true', datetime('now'));
-"
-```
-
-This state is temporary.
-
-Safe-state restoration is mandatory.
-
-## 17. Deployment Dry Run
-
-Run:
-
-```bash
-cd worker/food-lookup
-
-npm ci
-npm run typecheck
-npm test
-npx wrangler deploy --dry-run
-```
-
-Stop on the first failure.
-
-Do not deploy with failing tests.
-
-## 18. Deployment
-
-Deploy manually:
-
-```bash
-npx wrangler deploy
-```
-
-Record:
-
-```text
-Worker name
-workers.dev base URL
-UTC deployment timestamp
-deployed Git commit SHA
-deployment identifier/version
-Wrangler version
-```
-
-Do not record secret values.
-
-## 19. Smoke-Test Environment Variables
-
-Use local shell variables:
-
-```bash
-export GYMLEDGER_WORKER_URL="https://actual-worker-url.workers.dev"
-export GYMLEDGER_API_KEY="<local-shell-only-value>"
-```
-
-Do not commit or echo the key.
-
-## 20. Authentication Smoke Tests
-
-Before enabling providers:
-
-### Health
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/health"
-```
-
-Expected:
-
-```text
-HTTP 200
-```
-
-### Config
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/config"
-```
-
-Expected:
-
-```text
-HTTP 200
-```
-
-### Generic lookup without key
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Expected:
-
-```text
-HTTP 401
-unauthorized
-```
-
-### Barcode lookup without key
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/foods/barcode/3017620422003"
-```
-
-Expected:
-
-```text
-HTTP 401
-unauthorized
-```
-
-### Wrong key
-
-Use an explicitly incorrect local value.
-
-Expected:
-
-```text
-HTTP 401
-unauthorized
-```
-
-### Correct key with safe mode active
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Expected:
-
-```text
-HTTP 503
-lookup_disabled
-```
-
-Compare usage-counter deltas to confirm unauthorized calls did not consume external-call budget.
-
-## 21. USDA Production Smoke Test
-
-Temporarily enable the smoke state.
-
-Call:
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Verify:
-
-- HTTP 200
-- stable success envelope
-- query is present
-- source is `USDA`
-- attribution is present
-- `isApproximate` is true
-- results array exists
-- nutrient fields are normalized
-- no provider key appears
-- no raw USDA response fields appear
-
-Repeat the exact request.
-
-Verify using D1 counter deltas:
-
-- first request may increment `external_calls`
-- second request increments `cache_hits`
-- second request does not increment `external_calls`
-- cache-entry hit count increments
-
-Do not assume counters begin at zero.
-
-## 22. Open Food Facts Production Smoke Test
-
-Use:
-
-```text
-3017620422003
-```
-
-Call:
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/barcode/3017620422003"
-```
-
-Verify:
-
-- HTTP 200
-- barcode remains a string
-- source equals `OPEN_FOOD_FACTS`
-- attribution includes Open Food Facts and ODbL
-- `isApproximate` is true
-- product object exists
-- externalId matches requested barcode
-- normalized nutrition is present when available
-- no raw provider status/result fields appear
-- no image fields appear
-- no User-Agent value appears
-
-Repeat the exact request.
-
-Verify:
-
-- cache hit increments
-- external-call count does not increment
-- cached barcode identity remains correct
-
-## 23. Negative Production Tests
-
-### Invalid barcode
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/barcode/1234"
-```
-
-Expected:
-
-```text
-HTTP 400
-invalid_barcode
-```
-
-No provider call.
-
-### Unknown valid barcode
-
-Use one valid-format barcode known not to exist.
-
-Expected:
-
-```text
-HTTP 404
-not_found
-```
-
-### Disabled USDA provider
-
-Expected:
-
-```text
-provider_disabled
-```
-
-### Disabled Open Food Facts provider
-
-Expected:
-
-```text
-provider_disabled
-```
-
-### Disabled barcode feature
-
-Expected:
-
-```text
-feature_disabled
-```
-
-### Disabled online lookup
-
-Expected:
-
-```text
-lookup_disabled
-```
-
-### Safe mode
-
-Expected:
-
-```text
-lookup_disabled
-```
-
-Do not intentionally trigger provider rate limits.
-
-## 24. Budget-Gate Test
-
-Preferred sequence:
-
-1. Get current UTC date.
-2. Read current `external_calls` value.
-3. Temporarily set the daily budget to `external_calls + 1`.
-4. Make one fresh uncached provider request.
-5. Make another different uncached provider request.
-6. Confirm the second request returns `budget_exceeded`.
-7. Confirm the second request does not increment `external_calls`.
-8. Confirm `blocked_calls` increments.
-9. Restore budget to `25`.
-
-Do not delete usage data.
-
-Do not run high-volume calls.
-
-## 25. D1 Cache Verification
-
-Inspect selected fields only:
-
-```text
-cache_key
-source
-lookup_type
-query
-attribution
-is_approximate
-expires_at
-hit_count
-last_hit_at
-```
-
-Expected entries include:
-
-```text
-usda:generic:egg
-open_food_facts:barcode:3017620422003
-```
-
-Inspect `normalized_json` only when required.
-
-Do not share unnecessary provider-derived product details in logs.
-
-Verify no raw provider payload was stored.
-
-## 26. Runtime Restoration
-
-Mandatory final state:
-
-```text
-safe_mode=true
-online_lookup_enabled=false
-usda_provider_enabled=false
-open_food_facts_provider_enabled=false
-generic_food_search_enabled=false
-barcode_lookup_enabled=false
-daily_external_call_budget=25
-cache_enabled=true
-cache_ttl_seconds=86400
-```
-
-Apply the reviewed safe-state command.
-
-Then verify:
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Expected:
-
-```text
-HTTP 503
-lookup_disabled
-```
-
-The phase cannot pass without this confirmation.
-
-## 27. Deployment Documentation
-
-Create:
-
-```text
-docs/FOOD_LOOKUP_DEPLOYMENT.md
-```
-
-Required structure:
-
-```markdown
-# Food Lookup Worker Deployment
-
-## Deployment
-
-- Worker: `gymledger-food-lookup`
-- Base URL: `https://...workers.dev`
-- Environment: production
-- Git commit: `<sha>`
-- Deployment date: `<UTC timestamp>`
-- Wrangler version: `<version>`
-
-## Public Endpoints
-
-- `GET /v1/health`
-- `GET /v1/config`
-
-## Protected Endpoints
-
-- `GET /v1/foods/generic?q=<query>`
-- `GET /v1/foods/barcode/:barcode`
-
-Authentication header:
-
-`X-GymLedger-Key`
-
-## Runtime State
-
-Safe defaults restored after smoke testing.
-
-## Smoke Tests
-
-- health: PASS
-- config: PASS
-- authentication: PASS
-- safe mode: PASS
-- USDA lookup: PASS
-- USDA cache: PASS
-- Open Food Facts lookup: PASS
-- Open Food Facts cache: PASS
-- invalid barcode: PASS
-- unknown barcode: PASS
-- runtime switches: PASS
-- budget gate: PASS
-
-## Known Limitations
-
-- Open Food Facts per-serving nutrition may be unavailable.
-- Open Food Facts products using per-100-ml nutrition are not converted into per-100-g values.
-- Provider-derived nutrition remains approximate.
-- Android integration is not implemented yet.
-
-## Rollback
-
-- enable `safe_mode`
-- disable `online_lookup_enabled`
-- disable provider flags
-- disable lookup feature flags
-- redeploy the previous approved commit
-```
-
-Never include secret values.
-
-## 28. README Update
-
-Update `worker/food-lookup/README.md` with:
-
-- deployed endpoint reference
-- protected endpoint authentication header
-- production secret setup commands without values
-- remote migration commands
-- deployment commands
-- safe runtime defaults
-- smoke-test overview
-- rollback and kill-switch procedure
-- link to `docs/FOOD_LOOKUP_DEPLOYMENT.md`
-
-Do not duplicate private account metadata.
-
-## 29. Files Expected
-
-Create:
-
-```text
-docs/FOOD_LOOKUP_DEPLOYMENT.md
-```
-
-Modify:
-
-```text
-docs/CURRENT_PHASE.md
-docs/IMPLEMENTATION_PLAN.md
-worker/food-lookup/README.md
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/index.test.ts
-```
-
-Potentially create:
-
-```text
-worker/food-lookup/src/auth.test.ts
-```
-
-Modify only when a verified blocker requires it:
-
-```text
-worker/food-lookup/src/auth.ts
-worker/food-lookup/wrangler.toml
-```
-
-Do not modify:
-
-```text
-worker/food-lookup/src/providers/usda.ts
-worker/food-lookup/src/providers/openFoodFacts.ts
-worker/food-lookup/src/normalizers/
-worker/food-lookup/src/services/
-worker/food-lookup/src/cache.ts
-worker/food-lookup/src/usage.ts
-worker/food-lookup/migrations/
-app/
-build.gradle.kts
-settings.gradle.kts
-gradle/libs.versions.toml
-```
-
-unless a real deployment defect is reproduced and reported before editing.
-
-## 30. Test Requirements
-
-All existing tests must remain green.
-
-Add authentication coverage for:
-
-- public health
-- public config
-- generic missing key
-- generic wrong key
-- generic correct key
-- barcode missing key
-- barcode wrong key
-- barcode correct key
-- invalid query remains invalid_query
-- invalid barcode remains invalid_barcode
-- unauthorized provider invocation is prevented
-
-Expected test count:
-
-```text
-228 or more
-```
-
-No live provider calls in unit tests.
-
-## 31. Quality Gates
-
-From repository root:
+Scope gate:
 
 ```bash
 git status --short --untracked-files=all
 git diff --name-status
-git diff --stat
-git diff --check
-git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
-```
-
-From Worker:
-
-```bash
-cd worker/food-lookup
-
-npm ci
-npm run typecheck
-npm test
-npx wrangler deploy --dry-run
-```
-
-Cloudflare verification:
-
-```bash
-npx wrangler whoami
-npx wrangler d1 list
-npx wrangler d1 migrations list gymledger-food-lookup --remote
-npx wrangler secret list
+git diff -- worker/ || true
+git diff -- app/src/main/java/com/edu/gymledger/data/db || true
 ```
 
 Secret gate:
 
 ```bash
-cd ../..
-
-git grep -nE \
-  "GYMLEDGER_API_KEY=|USDA_API_KEY=|OPEN_FOOD_FACTS_USER_AGENT=.*@" \
-  -- ':!docs/CURRENT_PHASE.md' \
-     ':!docs/IMPLEMENTATION_PLAN.md' \
-     ':!worker/food-lookup/README.md' || true
+git grep -nE "X-GymLedger-Key:" -- app/src || true
+git grep -n "foodLookupApiKey" -- app/src/main app/src/test || true
 ```
 
-Android package safety:
+Package safety:
 
 ```bash
 grep -R -n "com\.gymledger" app/src || true
 ```
 
-## 32. Stop Conditions
+Install/run (UI phase):
 
-Stop immediately when:
-
-- Phase 17E.3 is absent from `dev`
-- repository is dirty unexpectedly
-- tests fail
-- typecheck fails
-- dry run fails
-- authentication is bypassable
-- lookup services execute before authentication
-- incorrect Cloudflare account is active
-- D1 database ID does not match
-- unexpected migration appears
-- required secret name is missing
-- secret value is tracked
-- public config exposes sensitive data
-- deployment unexpectedly requires billing
-- runtime flags cannot be restored
-- Android files changed
-- provider code requires modification
-
-After deployment, stop and report before patching when:
-
-- real provider response differs materially from tests
-- authentication fails
-- safe mode fails
-- cache stores raw payload
-- cache keys are incorrect
-- usage counters are inconsistent
-- rollback is required
-
-## 33. Code Preparation Report
-
-Before remote deployment, report:
-
-1. Files created.
-2. Files modified.
-3. Authentication route behavior.
-4. Authentication tests.
-5. Total unit-test count.
-6. Typecheck result.
-7. Wrangler dry-run result.
-8. Wrangler configuration audit.
-9. Android untouched.
-10. No secrets committed.
-11. Whether deployment is approved to proceed.
-
-## 34. Deployment Report
-
-After deployment and safe-state restoration, report:
-
-1. Cloudflare account verified.
-2. D1 database verified.
-3. Configured secret names.
-4. Remote migration result.
-5. Deployment URL.
-6. Deployment identifier.
-7. Deployed commit SHA.
-8. Health result.
-9. Config result.
-10. Authentication results.
-11. Safe-mode result.
-12. USDA result.
-13. USDA cache delta.
-14. Open Food Facts result.
-15. Open Food Facts cache delta.
-16. Invalid barcode result.
-17. Unknown barcode result.
-18. Runtime-switch results.
-19. Budget-gate result.
-20. Safe defaults restored.
-21. Known limitations.
-22. Rollback readiness.
-
-Do not include secret values.
-
-## 35. Suggested Commits
-
-Planning:
-
-```text
-docs: plan phase 17e4 worker deployment
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Authentication preparation:
+Worker tests: not run (Worker is not touched).
+
+## 20. Manual QA Checklist
+
+- Online assistance OFF: Foods screen and Smart Entry sheet behave as before; no remote UI.
+- Online assistance ON, endpoint/key blank: online toggle absent or "not configured"; manual entry works.
+- Online assistance ON, key present, Worker default (safe mode): online toggle present; triggering search yields "temporarily disabled"; manual entry works.
+- Temporarily enable Worker generic search (only if user explicitly approves): enter `egg`; results appear; each shows source + approximate; selecting prefills editable fields (calories/macros/quantity).
+- Edit values, then Save: local `Food` created with edited values; appears in Foods list.
+- Discard (Cancel) after selecting a remote result: no `Food` created.
+- App restart: settings persisted; no remote call at startup; Smart Entry resets to local mode.
+- Airplane mode: remote search fails with "Couldn't reach …"; manual + local reference entry usable.
+- Rotation/navigation: sheet state behaves per existing implementation; no crash.
+- No barcode field/button anywhere.
+- Verify `worker/` has zero diff after the phase.
+
+## 21. Model Routing for Implementation, Debugging, and Review
+
+- Implementation (UX integration): OpenCode Go Qwen3.6 Plus or Kimi K2.6.
+- Android networking/runtime (OkHttp timeouts, threading, permission, manifest): Gemini Android Studio.
+- Pre-commit review: OpenCode Go DeepSeek V4 Pro.
+- Final/visual review (optional screenshots): ChatGPT or Codex.
+- Do not escalate simple build/test specifics to premium models.
+
+## 22. Builder Preflight Prompt
 
 ```text
-fix: enforce food lookup API authentication
+Role: Builder preflight only. Do not edit files yet.
+
+Read in order:
+1. AGENTS.md
+2. docs/CURRENT_PHASE.md
+3. docs/IMPLEMENTATION_PLAN.md
+4. docs/ARCHITECTURE.md
+5. docs/AI_WORKFLOW.md
+6. docs/ONLINE_ASSISTED_PLATFORM.md
+7. docs/FOOD_LOOKUP_DEPLOYMENT.md
+
+Confirm:
+- Package is com.edu.gymledger; no com.gymledger.
+- Actual existing files listed in the plan exist with the described patterns.
+- SmartFoodEntryViewModel/Factory/Screen current behavior.
+- SettingsRepository/OnlineAssistanceSettings fields: onlineFoodLookupEnabled, foodLookupEndpoint, foodLookupApiKey.
+- AppContainer wiring pattern and settingsRepository lateinit.
+- AndroidManifest has no INTERNET permission yet.
+- Confirm exact files to create and modify per docs/IMPLEMENTATION_PLAN.md.
+- Confirm no Room schema change, no Worker change, no new routes.
+
+Output the Builder Preflight format (discovery, files to create/modify/not touch, summary, validation command, quality gates, manual QA, risks/mismatches, approval status). Stop and wait for approval.
 ```
 
-Deployment documentation:
+## 23. Reviewer Prompt
 
 ```text
-docs: record food lookup worker deployment
+Review the Phase 17F diff only. Do not edit.
+
+Read:
+- docs/CURRENT_PHASE.md
+- docs/IMPLEMENTATION_PLAN.md
+- docs/AI_WORKFLOW.md
+- git diff
+
+Check:
+1. Only generic remote search is implemented; no barcode/scanning/recents/favorites.
+2. OkHttp is the only new dependency.
+3. API key is user-entered, sent only as X-GymLedger-Key header, never in URL/DTOs/logs/errors.
+4. Offline-first preserved; manual/local entry unaffected by all disabled/error states.
+5. No Room schema change; no Worker changes; no new routes.
+6. Package com.edu.gymledger only.
+7. UI text English; source + approximate badges present for remote results.
+8. No auto-save; explicit Save only.
+9. Tests use fakes; no real network.
+10. Tests cover transport, config, gating, ViewModel, security invariants.
+
+Return PASS, PASS_WITH_NOTES, or BLOCKED with blockers, non-blocking concerns, scope creep, risky files, and a suggested commit message.
 ```
+
+## 24. Commit-Ready Gate
+
+Before commit:
+
+```bash
+git status --short --untracked-files=all
+git diff --stat
+git diff -- worker/ || true
+./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
+git grep -nE "X-GymLedger-Key:" -- app/src || true
+grep -R -n "com\.gymledger" app/src || true
+```
+
+Commit only if validation passes, manual QA done, scope clean, no secret value present, no worker diff, no schema diff, reviewer PASS/PASS_WITH_NOTES.
+
+## 25. Stop Conditions
+
+- Phase 17E.4 absent from branch history.
+- Dirty repo unexpectedly.
+- First real build/test/lint error not fixed within two local attempts (escalate).
+- Real API key value found in source/tests/docs/logs.
+- Worker code modified.
+- Room schema/DB version changed.
+- Barcode UI introduced.
+- Remote results auto-save without confirmation.
+- Any dependency beyond OkHttp appears necessary.
+- Reviewer returns BLOCKED and the blocker cannot be resolved within scope.
+
+---
