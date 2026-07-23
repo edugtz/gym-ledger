@@ -19,18 +19,24 @@ Connect Android to the deployed GymLedger Food Lookup Worker for **generic food 
 ### In Scope
 
 - App-owned DTOs for Worker `/v1/config` and `/v1/foods/generic?q=`.
-- JSON decoding with existing `kotlinx-serialization-json`.
-- HTTP client abstraction + OkHttp implementation.
+- JSON decoding with existing `kotlinx-serialization-json` (strict: `ignoreUnknownKeys=true`, `isLenient=false`).
+- HTTP client abstraction + OkHttp implementation behind a `okhttp3.Call.Factory` seam.
+- Cancellation-aware OkHttp bridge (`Call.enqueue` + `suspendCancellableCoroutine`).
 - Explicit `X-GymLedger-Key` header handling; key never in URL/logs/DTOs.
-- Timeout and transport-error mapping to user-safe outcomes.
+- Timeout (~5s connect/read/write) and transport-error mapping to user-safe outcomes.
+- Custom endpoint validation (absolute HTTPS, no userinfo/query/fragment, normalized trailing slash).
+- Blank endpoint → default production Worker URL; blank key → remote not configured.
 - `RemoteFoodLookupRepository` orchestration using `SettingsRepository` endpoint/key.
-- Lazy `/v1/config` fetch with short-lived in-memory cache and conservative fallback.
+- Lazy `/v1/config` fetch (only when entering Online search) with 5-minute in-memory cache via an injectable monotonic time source and conservative fallback.
 - Generic-search flow integrated into the existing `SmartFoodEntrySheet` as an optional "Online search" mode.
+- Manual search submission (IME Search / button); no per-keystroke network calls; duplicate-concurrent prevention.
 - User confirmation before local save (existing `FoodRepository.create` path).
+- Nullable nutrition contract: DTO nutrients nullable; filter incomplete/negative/non-finite results; round valid calories to Int; map to `FoodReference` without changing its schema.
 - Source and approximate attribution display (reuse existing chips).
-- Graceful offline / disabled / missing-key / unconfigured / error states.
-- Unit tests with fake transport/client (no real network).
+- Graceful offline / disabled / missing-key / unconfigured / invalid-endpoint / error states shown inline.
+- Unit tests with fake `Call.Factory` / `FoodLookupClient` (no real network).
 - Manual runtime QA.
+- Settings helper-text consistency: resolving the contradiction between "Leave blank to use default" and the old "endpoint must be entered" helper.
 
 ### Explicitly Out of Scope
 
@@ -38,16 +44,17 @@ Connect Android to the deployed GymLedger Food Lookup Worker for **generic food 
 - CameraX.
 - Recents and favorites.
 - Auto-saving provider results.
+- Caching provider results in Room (no Room lookup cache this phase).
 - Cloud accounts.
 - Cloud sync.
 - Backend / Worker code changes or deployment changes.
 - Worker migrations.
 - Analytics or telemetry.
 - Paid providers.
-- Caching provider results in Room.
 - Broad Nutrition redesign.
 - Food schema changes.
 - New navigation routes.
+- `openFoodFactsEnabled` usage (reserved for Phase 17G).
 
 ### Architecture Boundaries
 
@@ -63,6 +70,7 @@ Connect Android to the deployed GymLedger Food Lookup Worker for **generic food 
 - The API key is user-entered in Settings and stored in DataStore on-device only.
 - Do not put the key in Kotlin source, XML resources, docs, tests, committed `gradle.properties`, BuildConfig snapshots, or logs.
 - The key is sent only as the `X-GymLedger-Key` request header, never as a query parameter or in the URL.
+- The key is sent only to the resolved and validated origin (default production Worker URL or a user-entered valid custom HTTPS endpoint).
 - Error/log messages and DTOs must not include the key.
 - Build behavior with no configured key: remote lookup is unavailable; manual/local flows unaffected.
 - The Worker base URL is public (documented in `docs/FOOD_LOOKUP_DEPLOYMENT.md`) and may be a default constant; it is not a secret.
@@ -71,18 +79,92 @@ Connect Android to the deployed GymLedger Food Lookup Worker for **generic food 
 
 - Existing local food creation, editing, search, and smart (reference) entry continue working with no internet.
 - Opening or using Nutrition/Foods must not require the Worker.
-- Network failure, timeout, missing key, 503 disabled states, or config-fetch failure leave manual/local entry usable.
+- No config fetch at application startup. No config fetch while "Local reference" mode is active.
+- Network failure, timeout, missing key, invalid endpoint, 503 disabled states, or config-fetch failure leave manual/local entry usable and show an inline user-safe state.
 - A remote result becomes local only after explicit Save.
+
+### Endpoint Semantics
+
+- `foodLookupEndpoint` blank → use the default production Worker URL constant (`https://gymledger-food-lookup.eduardo-gutierrez-2325.workers.dev`). A custom endpoint is not required when the default is used.
+- `foodLookupApiKey` blank → remote lookup is not configured (unavailable); no network call.
+- A non-blank custom endpoint must be validated: absolute HTTPS URL, no embedded username/password (userinfo), no query, no fragment, and a normalized trailing slash. An invalid custom endpoint makes remote lookup unavailable with an inline user-safe message.
+- The API key is sent only to the resolved validated origin.
+
+### Complete Generic-Search Gating
+
+Local gates (must all hold before any network call):
+
+- `onlineFoodLookupEnabled = true`
+- `usdaEnabled = true`
+- `safeModeEnabled = false`
+- API key non-blank
+- endpoint blank (→ default URL) or valid custom HTTPS endpoint
+
+Remote config gates (from cached `/v1/config`, must all hold):
+
+- `onlineLookupAvailable = true`
+- `providers.usda = true`
+- `features.genericFoodSearch = true`
+- `safeMode = false`
+- query length ≥ `minQueryLength`
+
+`openFoodFactsEnabled` is explicitly unused in Phase 17F and remains for Phase 17G.
+
+### Nullable Nutrition Contract
+
+The actual Worker contract allows `null` for `caloriesKcal`, `proteinG`, `carbohydrateG`, and `fatG`. `FoodReference` does not allow nullable nutrition and must not be modified.
+
+Policy:
+
+- DTO nutrient fields remain nullable.
+- Do not coerce `null` to zero.
+- Filter any result that has a missing, negative, or non-finite nutrient (calories, protein, carbs, fat).
+- Convert valid calories to `Int` using an explicitly documented rounding rule (round to nearest, 0.5 rounds up, then require ≥ 0).
+- If all provider results are filtered out, return `Empty`.
+- Do not modify `FoodReference` or the Room schema.
+
+### Online Mode Visibility
+
+- The "Online search" toggle is absent only when `onlineFoodLookupEnabled = false`.
+- When the user has enabled online assistance, "Online search" remains visible even if the Worker is temporarily disabled or a gate fails.
+- Missing key, USDA disabled, local safe mode, invalid endpoint, remote safe mode, remote provider disabled, or remote feature disabled must show an inline user-safe state inside the Online search area.
+- Do not silently remove the mode because the Worker is temporarily disabled.
+- Manual/local entry always remains usable.
+
+### Config-Fetch Timing
+
+Exact flow:
+
+- No config fetch at application startup.
+- No config fetch while "Local reference" mode is active.
+- Fetch config when entering "Online search" for the first time.
+- Cache in memory for 5 minutes.
+- Re-fetch when stale.
+- Conservative unavailable state on failure (no config call per keystroke).
+- Use an injectable monotonic time source for TTL tests.
+
+### Search Trigger
+
+Phase 17F uses manual remote submission:
+
+- `onValueChange` only updates the query.
+- IME Search or a "Search online" button starts the request.
+- No Worker call per keystroke.
+- No debounce is required because submission is explicit.
+- Prevent duplicate concurrent submissions.
+- Cancellation/reset behavior: leaving Online search mode or dismissing the sheet cancels an in-flight search coroutine; a new submission while one is in flight is ignored (no concurrent duplicate).
 
 ### Files/Layers Allowed
 
 - `gradle/libs.versions.toml`, `app/build.gradle.kts` — add OkHttp dependency.
 - `app/src/main/AndroidManifest.xml` — add `INTERNET` permission.
-- `app/src/main/java/com/edu/gymledger/app/AppContainer.kt` — wire OkHttp client + `RemoteFoodLookupRepository`.
-- `app/src/main/java/com/edu/gymledger/data/remote/**` — client, DTOs, errors, parser.
+- `app/src/main/java/com/edu/gymledger/app/AppContainer.kt` — wire shared `OkHttpClient` + `RemoteFoodLookupRepository` + monotonic time source.
+- `app/src/main/java/com/edu/gymledger/data/remote/**` — client, DTOs, errors, parser, `Call.Factory` seam, cancellation bridge, endpoint validation.
 - `app/src/main/java/com/edu/gymledger/data/repository/lookup/RemoteFoodLookupRepository.kt`.
-- `app/src/main/java/com/edu/gymledger/domain/model/lookup/**` — remote result domain model + mapper.
+- `app/src/main/java/com/edu/gymledger/domain/model/lookup/**` — remote result domain model + mapper (nullable-aware filtering + calorie rounding).
 - `app/src/main/java/com/edu/gymledger/feature/nutrition/SmartFoodEntry*.kt` — online mode integration.
+- `app/src/main/java/com/edu/gymledger/feature/settings/SettingsViewModel.kt` — endpoint validation helper exposure if needed.
+- `app/src/main/java/com/edu/gymledger/feature/settings/SettingsScreen.kt` — only if helper text must change to resolve the "Leave blank to use default" contradiction.
 - `app/src/test/java/com/edu/gymledger/**` — new unit tests.
 - `docs/CURRENT_PHASE.md`, `docs/IMPLEMENTATION_PLAN.md` — this replacement.
 
@@ -93,56 +175,109 @@ Connect Android to the deployed GymLedger Food Lookup Worker for **generic food 
 - `app/src/main/java/com/edu/gymledger/data/db/dao/FoodDao.kt`.
 - `app/src/main/java/com/edu/gymledger/data/db/GymLedgerDatabase.kt`.
 - `app/src/main/java/com/edu/gymledger/data/repository/FoodRepository.kt`.
-- `app/src/main/java/com/edu/gymledger/data/repository/SettingsRepository.kt`.
+- `app/src/main/java/com/edu/gymledger/data/repository/SettingsRepository.kt` (read-only consumer; no DataStore key changes).
 - `app/src/main/java/com/edu/gymledger/data/repository/OnlineAssistanceSettings.kt`.
+- `app/src/main/java/com/edu/gymledger/domain/model/FoodReference.kt` and `FoodReferenceCalculator.kt`.
 - `app/src/main/java/com/edu/gymledger/navigation/**`.
-- All features other than `feature/nutrition` (and `feature/settings` is not modified).
+- All features other than `feature/nutrition` and `feature/settings`.
+- Barcode/product lookup work.
 - `app/src/main/java/com/gymledger/**` (empty legacy dirs).
+
+### Cache Decision
+
+- No Room lookup cache in Phase 17F.
+- Unconfirmed suggestions are ephemeral (in-memory only).
+- Worker D1 caches provider responses.
+- Confirmed results become normal local `Food` rows via `FoodRepository.create`.
+- The remote domain model remains compatible with a future local lookup cache.
+- No fake or hidden Room cache is implemented now.
 
 ### Acceptance Criteria
 
-- Generic remote search works only when: online assistance enabled, endpoint/key configured, Worker config says `onlineLookupAvailable && features.genericFoodSearch && !safeMode`, and query length ≥ server `minQueryLength`.
-- Disabled/unconfigured/offline/error states all preserve manual and local reference entry.
+- Generic remote search works only when all local gates and all remote config gates hold, and query length ≥ server `minQueryLength`.
+- Blank endpoint uses the default Worker URL; a custom endpoint must pass validation or remote is unavailable; no custom endpoint is required to use the default.
+- Blank API key means remote is not configured; no network call occurs.
+- `usdaEnabled=true` is required locally; `providers.usda=true` is required remotely.
+- `openFoodFactsEnabled` is not used this phase.
+- Disabled/unconfigured/offline/invalid-endpoint/error states preserve manual and local reference entry.
+- The "Online search" toggle is visible whenever `onlineFoodLookupEnabled=true`; failures show inline user-safe states and do not silently remove the mode.
 - Selecting a remote result prefills editable fields; Save creates a normal local `Food`.
 - Source and approximate badges are shown for remote results.
+- Remote results with missing/negative/non-finite nutrients are filtered; if all are filtered, `Empty` is returned; `null` is never coerced to zero.
 - No product/barcode lookup UI introduced.
 - No Room schema change.
 - No backend/Worker changes.
+- Setting helper text is consistent with endpoint default semantics.
 - Validation passes.
 - Scope is clean; no unrelated files changed.
 
 ### Required Tests
 
-Transport/client (fakes, no network):
+Transport/client (`OkHttpFoodLookupClientTest` via fake `Call.Factory`):
 - Correct route + URL encoding for `/v1/foods/generic`.
 - `X-GymLedger-Key` header present; key not in URL; key not in DTOs or error strings.
-- Success decoding (including `nutritionPer100g`).
-- Empty results list.
-- Each HTTP/error mapping (400 invalid_query, 401 unauthorized, 429 budget_exceeded, 503 lookup_disabled/provider_disabled/feature_disabled/configuration_error, provider_error).
-- Malformed body.
-- Timeout/transport failure maps to a transport error.
+- Config route `/v1/config` has no key header.
+- Success decoding including `nutritionPer100g` with complete nutrients.
+- Empty results list → `Empty`.
+- Each HTTP/error mapping: 400 `invalid_query`, 401 `unauthorized`, 429 `budget_exceeded`, 503 `lookup_disabled`/`provider_disabled`/`feature_disabled`/`configuration_error`, body `provider_error`.
+- Malformed body → `MalformedResponse`.
+- Cancellation-aware bridge cancels the OkHttp `Call` when the coroutine is cancelled.
 
 Config:
 - Conservative fallback when config fetch fails or body malformed.
-- Enabled state (`onlineLookupAvailable && genericFoodSearch && !safeMode`) allows search.
+- Enabled state (`onlineLookupAvailable && providers.usda && features.genericFoodSearch && !safeMode`) allows search.
 - `safeMode=true` suppresses search.
 - `features.genericFoodSearch=false` suppresses search.
+- `providers.usda=false` suppresses search.
 - `minQueryLength` advertises and gates query length.
-- In-memory cache reuses fresh config and re-fetches when stale.
+- In-memory cache reuses fresh config and re-fetches when stale (injectable monotonic time source).
 
 Repository / product:
-- Online setting disabled → no remote call.
+- `onlineFoodLookupEnabled=false` → no remote call.
 - Missing API key → remote unavailable, no call.
+- `usdaEnabled=false` → remote unavailable, no call.
+- `safeModeEnabled=true` → remote unavailable, no call.
+- Invalid custom endpoint → remote unavailable, no call.
 - Too-short query → no remote call.
+- Endpoint blank → default URL used.
+- Endpoint non-blank invalid → unavailable.
 - Enabled valid query → loading/success/empty/error states.
 - Selecting a remote result prefills the editable fields.
 - Result remains editable; no automatic local save.
 - Manual flow remains available after remote failure.
-- Debounce is not required this phase (manual trigger). Cancellation is supported only if implementation introduces it.
+- Duplicate concurrent submission prevented.
+
+Nullable nutrition:
+- Complete nutrients decode and map.
+- Incomplete (null) nutrient → result filtered.
+- Mixed complete/incomplete → only complete results returned.
+- Negative nutrient → filtered.
+- Non-finite nutrient → filtered.
+- All filtered → `Empty`.
+- Valid calories rounded to `Int` per documented rule.
+
+ViewModel:
+- Online setting disabled → toggle absent, no remote call.
+- Online setting enabled, missing key → toggle visible, inline "not configured" state, no call.
+- Online setting enabled, `usdaEnabled=false` → inline state, no call.
+- Online setting enabled, `safeModeEnabled=true` → inline state, no call.
+- Online setting enabled, invalid endpoint → inline state, no call.
+- Online setting enabled, valid, remote disabled → inline "temporarily disabled" state, manual usable.
+- Too-short query → no remote call.
+- Valid query → loading/success/empty/error states.
+- Selecting a remote result prefills editable fields.
+- Editable fields remain editable; no save until explicit call.
+- Manual flow available after remote failure.
+- Leaving Online search mode or dismissing sheet cancels in-flight search.
+- Key value never present in UI state or error strings.
 
 Security:
 - No key in error strings, DTOs, or URL.
 - No real network access in unit tests.
+
+Settings (if modified):
+- Helper text consistent with "Leave blank to use default."
+- Custom endpoint validation enforces HTTPS, no userinfo/query/fragment, trailing slash.
 
 ### Validation Commands
 
@@ -171,16 +306,20 @@ Scope gate:
 git diff --name-status
 git diff --stat
 git diff -- worker/ || true
+git diff -- app/src/main/java/com/edu/gymledger/data/db || true
 ```
 
-`worker/` diff must be empty.
+`worker/` and DB diffs must be empty.
 
 ### Manual QA
 
-- Online assistance setting OFF: remote controls absent or disabled; manual + smart entry work.
-- Online assistance ON, no endpoint/key: remote assistance unavailable; manual entry works.
-- Online assistance ON, valid endpoint + key, Worker in conservative/safe mode (current production): remote search reports disabled; manual entry works.
-- Worker temporarily enabled for controlled testing (optional, only if user explicitly approves): successful USDA generic result prefills fields.
+- Online assistance setting OFF: remote toggle absent; manual + smart entry work.
+- Online assistance ON, no key: Online search visible with inline "not configured"; manual entry works.
+- Online assistance ON, key present, `usdaEnabled=false`: Online search visible with inline "temporarily unavailable"; manual entry works.
+- Online assistance ON, key present, `safeModeEnabled=true`: Online search visible with inline "temporarily unavailable"; manual entry works.
+- Online assistance ON, key present, invalid custom endpoint: Online search visible with inline "invalid endpoint"; manual entry works.
+- Online assistance ON, key present, endpoint blank (default URL), Worker in conservative/safe mode (current production): Online search visible; search reports "temporarily disabled"; manual entry works.
+- Worker temporarily enabled for controlled testing (optional, only if user explicitly approves): successful USDA generic result prefills fields; each result shows source + approximate.
 - Edit-before-save: change values then Save; verify local `Food` created with edited values.
 - Persistence only after Save: discarding a remote suggestion never creates a `Food`.
 - App restart: settings (endpoint/key/toggles) persist; no remote call at startup.
@@ -201,6 +340,8 @@ Stop immediately when:
 - Barcode UI is introduced.
 - Remote results auto-save without confirmation.
 - Adding a dependency beyond OkHttp becomes necessary.
+- `FoodReference` or `FoodReferenceCalculator` is modified.
+- `isLenient=true` is enabled in JSON parsing.
 
 ### Suggested Commit
 
@@ -216,6 +357,6 @@ feat: add online food lookup
 - No Room schema change.
 - Manual QA completed and recorded.
 - Reviewer returns PASS or PASS_WITH_NOTES.
-- Branch `17f-android-remote-lookup-plan` ready for ChatGPT GitHub review before merge to `dev`.
+- Branch `17f-plan` ready for ChatGPT GitHub review before merge to `dev`.
 
 ---
