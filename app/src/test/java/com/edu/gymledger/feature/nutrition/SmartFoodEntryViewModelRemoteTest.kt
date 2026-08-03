@@ -6,6 +6,7 @@ import com.edu.gymledger.data.remote.FoodLookupOutcome
 import com.edu.gymledger.data.remote.MonotonicTimeSource
 import com.edu.gymledger.data.remote.dto.FoodLookupConfigDto
 import com.edu.gymledger.data.remote.dto.FeaturesDto
+import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 import com.edu.gymledger.data.remote.dto.GenericLookupItemDto
 import com.edu.gymledger.data.remote.dto.NutritionPer100gDto
 import com.edu.gymledger.data.remote.dto.ProvidersDto
@@ -15,7 +16,7 @@ import com.edu.gymledger.data.repository.OnlineAssistanceSettings
 import com.edu.gymledger.data.repository.lookup.OnlineSearchAvailability
 import com.edu.gymledger.data.repository.lookup.RemoteFoodLookupRepository
 import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
-import com.edu.gymledger.domain.model.lookup.RemoteFoodReferenceMapper
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -40,7 +41,9 @@ class SmartFoodEntryViewModelRemoteTest {
     private lateinit var fakeFoodRepository: FoodRepository
     private lateinit var fakeFoodDao: FakeFoodDao
     private lateinit var fakeReferenceRepository: FoodReferenceRepository
-    private lateinit var fakeRemoteRepository: FakeRemoteFoodLookupRepository
+    private lateinit var fakeClient: FakeFoodLookupClient
+    private lateinit var fakeTimeSource: FakeMonotonicTimeSource
+    private lateinit var remoteRepository: RemoteFoodLookupRepository
     private lateinit var settingsFlow: MutableStateFlow<OnlineAssistanceSettings>
     private lateinit var viewModel: SmartFoodEntryViewModel
 
@@ -51,11 +54,13 @@ class SmartFoodEntryViewModelRemoteTest {
         fakeFoodRepository = FoodRepository(fakeFoodDao)
         fakeReferenceRepository = FoodReferenceRepository()
         settingsFlow = MutableStateFlow(OnlineAssistanceSettings())
-        fakeRemoteRepository = FakeRemoteFoodLookupRepository()
+        fakeClient = FakeFoodLookupClient()
+        fakeTimeSource = FakeMonotonicTimeSource()
+        remoteRepository = RemoteFoodLookupRepository(fakeClient, fakeTimeSource)
         viewModel = SmartFoodEntryViewModel(
             fakeReferenceRepository,
             fakeFoodRepository,
-            fakeRemoteRepository,
+            remoteRepository,
             settingsFlow
         )
     }
@@ -64,6 +69,14 @@ class SmartFoodEntryViewModelRemoteTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    private fun enabledSettings() = OnlineAssistanceSettings(
+        onlineFoodLookupEnabled = true,
+        foodLookupApiKey = "key",
+        usdaEnabled = true,
+        openFoodFactsEnabled = false,
+        safeModeEnabled = false
+    )
 
     @Test
     fun onlineSettingDisabled_toggleAbsent() = runTest {
@@ -76,10 +89,7 @@ class SmartFoodEntryViewModelRemoteTest {
 
     @Test
     fun onlineSettingEnabled_toggleVisible() = runTest {
-        settingsFlow.value = OnlineAssistanceSettings(
-            onlineFoodLookupEnabled = true,
-            foodLookupApiKey = "key"
-        )
+        settingsFlow.value = enabledSettings()
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
@@ -125,6 +135,118 @@ class SmartFoodEntryViewModelRemoteTest {
         assertTrue(state.onlineAvailability is OnlineSearchAvailability.SafeMode)
     }
 
+    // --- Local gates must block fetchConfig (Fix 5) ---
+
+    @Test
+    fun toggleOnlineMode_onlineDisabled_noConfigCall() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(onlineFoodLookupEnabled = false)
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(0, fakeClient.fetchConfigCallCount)
+    }
+
+    @Test
+    fun toggleOnlineMode_missingKey_noConfigCall() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = ""
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(0, fakeClient.fetchConfigCallCount)
+        assertTrue(viewModel.uiState.value.onlineAvailability is OnlineSearchAvailability.NotConfigured)
+    }
+
+    @Test
+    fun toggleOnlineMode_usdaDisabled_noConfigCall() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "key",
+            usdaEnabled = false
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(0, fakeClient.fetchConfigCallCount)
+        assertTrue(viewModel.uiState.value.onlineAvailability is OnlineSearchAvailability.UsdaDisabled)
+    }
+
+    @Test
+    fun toggleOnlineMode_safeModeEnabled_noConfigCall() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "key",
+            safeModeEnabled = true
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(0, fakeClient.fetchConfigCallCount)
+        assertTrue(viewModel.uiState.value.onlineAvailability is OnlineSearchAvailability.SafeMode)
+    }
+
+    @Test
+    fun toggleOnlineMode_invalidEndpoint_noConfigCall() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "key",
+            foodLookupEndpoint = "http://insecure.com",
+            safeModeEnabled = false
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(0, fakeClient.fetchConfigCallCount)
+        assertTrue(viewModel.uiState.value.onlineAvailability is OnlineSearchAvailability.InvalidEndpoint)
+    }
+
+    @Test
+    fun toggleOnlineMode_allGatesPass_fetchesConfigOnce() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(1, fakeClient.fetchConfigCallCount)
+        assertTrue(viewModel.uiState.value.onlineAvailability is OnlineSearchAvailability.Available)
+    }
+
+    // --- Config cache survives sheet reopen (Fix 7) ---
+
+    @Test
+    fun resetState_keepsConfigCache() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+        assertEquals(1, fakeClient.fetchConfigCallCount)
+
+        viewModel.resetState()
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(1, fakeClient.fetchConfigCallCount)
+    }
+
+    // --- Search behavior ---
+
     @Test
     fun onOnlineQueryChange_updatesQuery() = runTest {
         viewModel.onOnlineQueryChange("egg")
@@ -141,10 +263,8 @@ class SmartFoodEntryViewModelRemoteTest {
 
     @Test
     fun submitOnlineSearch_tooShortQuery_showsError() = runTest {
-        settingsFlow.value = OnlineAssistanceSettings(
-            onlineFoodLookupEnabled = true,
-            foodLookupApiKey = "key"
-        )
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
         advanceUntilIdle()
         viewModel.toggleOnlineMode(true)
         advanceUntilIdle()
@@ -159,12 +279,9 @@ class SmartFoodEntryViewModelRemoteTest {
 
     @Test
     fun submitOnlineSearch_validQuery_showsResults() = runTest {
-        settingsFlow.value = OnlineAssistanceSettings(
-            onlineFoodLookupEnabled = true,
-            foodLookupApiKey = "key"
-        )
-        fakeRemoteRepository.configResult = FoodLookupOutcome.Success(enabledConfig())
-        fakeRemoteRepository.searchResult = FoodLookupOutcome.Success(listOf(eggItemDto()))
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(listOf(eggItemDto())))
         advanceUntilIdle()
         viewModel.toggleOnlineMode(true)
         advanceUntilIdle()
@@ -181,12 +298,9 @@ class SmartFoodEntryViewModelRemoteTest {
 
     @Test
     fun submitOnlineSearch_error_showsMessage() = runTest {
-        settingsFlow.value = OnlineAssistanceSettings(
-            onlineFoodLookupEnabled = true,
-            foodLookupApiKey = "key"
-        )
-        fakeRemoteRepository.configResult = FoodLookupOutcome.Success(enabledConfig())
-        fakeRemoteRepository.searchResult = FoodLookupOutcome.Error(FoodLookupError.Transport)
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Error(FoodLookupError.Transport)
         advanceUntilIdle()
         viewModel.toggleOnlineMode(true)
         advanceUntilIdle()
@@ -198,6 +312,23 @@ class SmartFoodEntryViewModelRemoteTest {
         val state = viewModel.uiState.value
         assertNotNull(state.onlineError)
         assertTrue(state.onlineError!!.contains("connection"))
+    }
+
+    @Test
+    fun submitOnlineSearch_remoteDisabled_doesNotSetError() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig().copy(safeMode = true))
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.onOnlineQueryChange("egg")
+        viewModel.submitOnlineSearch()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.onlineAvailability is OnlineSearchAvailability.RemoteDisabled)
+        assertEquals(0, fakeClient.searchGenericCallCount)
     }
 
     @Test
@@ -249,12 +380,9 @@ class SmartFoodEntryViewModelRemoteTest {
 
     @Test
     fun cancelSearch_stopsSearching() = runTest {
-        settingsFlow.value = OnlineAssistanceSettings(
-            onlineFoodLookupEnabled = true,
-            foodLookupApiKey = "key"
-        )
-        fakeRemoteRepository.configResult = FoodLookupOutcome.Success(enabledConfig())
-        fakeRemoteRepository.searchResult = FoodLookupOutcome.Success(emptyList())
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Success(emptyData())
         advanceUntilIdle()
         viewModel.toggleOnlineMode(true)
         advanceUntilIdle()
@@ -268,13 +396,33 @@ class SmartFoodEntryViewModelRemoteTest {
     }
 
     @Test
+    fun leavingOnlineMode_cancelsInFlightSearch() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchGate = CompletableDeferred()
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.onOnlineQueryChange("egg")
+        viewModel.submitOnlineSearch()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.isOnlineSearching)
+
+        viewModel.toggleOnlineMode(false)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isOnlineSearching)
+        assertFalse(viewModel.uiState.value.onlineMode)
+        fakeClient.searchGate!!.complete(Unit)
+        advanceUntilIdle()
+    }
+
+    @Test
     fun duplicateSubmission_prevented() = runTest {
-        settingsFlow.value = OnlineAssistanceSettings(
-            onlineFoodLookupEnabled = true,
-            foodLookupApiKey = "key"
-        )
-        fakeRemoteRepository.configResult = FoodLookupOutcome.Success(enabledConfig())
-        fakeRemoteRepository.searchResult = FoodLookupOutcome.Success(listOf(eggItemDto()))
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(listOf(eggItemDto())))
         advanceUntilIdle()
         viewModel.toggleOnlineMode(true)
         advanceUntilIdle()
@@ -284,7 +432,7 @@ class SmartFoodEntryViewModelRemoteTest {
         viewModel.submitOnlineSearch()
         advanceUntilIdle()
 
-        assertEquals(1, fakeRemoteRepository.searchCallCount)
+        assertEquals(1, fakeClient.searchGenericCallCount)
     }
 
     @Test
@@ -316,11 +464,27 @@ class SmartFoodEntryViewModelRemoteTest {
         safeMode = false
     )
 
-    private fun eggItemDto() = GenericLookupItemDto(
-        id = "usda:123",
-        name = "Egg",
+    private fun genericData(results: List<GenericLookupItemDto>) = GenericLookupDataDto(
+        query = "egg",
         source = "USDA",
-        type = "generic",
+        attribution = "USDA FoodData Central",
+        isApproximate = true,
+        results = results
+    )
+
+    private fun emptyData() = GenericLookupDataDto(
+        query = "egg",
+        source = "USDA",
+        attribution = "USDA FoodData Central",
+        isApproximate = true,
+        results = emptyList()
+    )
+
+    private fun eggItemDto() = GenericLookupItemDto(
+        externalId = "usda:123",
+        name = "Egg",
+        description = "Egg",
+        dataType = "survey_fndds_food",
         nutritionPer100g = NutritionPer100gDto(
             caloriesKcal = 143.0,
             proteinG = 12.6,
@@ -360,9 +524,9 @@ class SmartFoodEntryViewModelRemoteTest {
             return stored.find { it.id == id }
         }
 
-        override fun listAll(): kotlinx.coroutines.flow.Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = listAllFlow
+        override fun listAll(): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = listAllFlow
 
-        override fun searchByName(query: String): kotlinx.coroutines.flow.Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> {
+        override fun searchByName(query: String): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> {
             val lower = query.lowercase()
             return kotlinx.coroutines.flow.flow {
                 listAllFlow.collect { items ->
@@ -372,68 +536,32 @@ class SmartFoodEntryViewModelRemoteTest {
         }
     }
 
-    class FakeRemoteFoodLookupRepository : RemoteFoodLookupRepository(
-        object : FoodLookupClient {
-            override suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<FoodLookupConfigDto> =
-                FoodLookupOutcome.Error(FoodLookupError.Transport)
-            override suspend fun searchGeneric(baseUrl: String, apiKey: String, query: String): FoodLookupOutcome<List<GenericLookupItemDto>> =
-                FoodLookupOutcome.Error(FoodLookupError.Transport)
-        },
-        object : MonotonicTimeSource {
-            override fun nowMillis(): Long = 0L
-        }
-    ) {
+    class FakeFoodLookupClient : FoodLookupClient {
         var configResult: FoodLookupOutcome<FoodLookupConfigDto> = FoodLookupOutcome.Error(FoodLookupError.Transport)
-        var searchResult: FoodLookupOutcome<List<GenericLookupItemDto>> = FoodLookupOutcome.Success(emptyList())
-        var searchCallCount = 0
+        var searchResult: FoodLookupOutcome<GenericLookupDataDto> = FoodLookupOutcome.Success(GenericLookupDataDto())
+        var searchGate: CompletableDeferred<Unit>? = null
+        var fetchConfigCallCount = 0
+            private set
+        var searchGenericCallCount = 0
             private set
 
-        override fun getEffectiveAvailability(
-            settings: OnlineAssistanceSettings,
-            config: FoodLookupConfigDto?
-        ): OnlineSearchAvailability {
-            if (!settings.onlineFoodLookupEnabled) return OnlineSearchAvailability.Disabled
-            if (settings.foodLookupApiKey.isBlank()) return OnlineSearchAvailability.NotConfigured
-            if (!settings.usdaEnabled) return OnlineSearchAvailability.UsdaDisabled
-            if (settings.safeModeEnabled) return OnlineSearchAvailability.SafeMode
-            if (config != null && config.safeMode) return OnlineSearchAvailability.RemoteDisabled
-            if (config != null && !config.onlineLookupAvailable) return OnlineSearchAvailability.RemoteDisabled
-            if (config != null && !config.providers.usda) return OnlineSearchAvailability.RemoteDisabled
-            if (config != null && !config.features.genericFoodSearch) return OnlineSearchAvailability.RemoteDisabled
-            return OnlineSearchAvailability.Available("https://example.com/", 3)
-        }
-
-        override suspend fun ensureConfig(settings: OnlineAssistanceSettings): FoodLookupConfigDto {
-            return when (val r = configResult) {
-                is FoodLookupOutcome.Success -> r.data
-                else -> FoodLookupConfigDto(
-                    onlineLookupAvailable = false,
-                    providers = ProvidersDto(usda = false),
-                    features = FeaturesDto(genericFoodSearch = false),
-                    minQueryLength = 3,
-                    safeMode = true
-                )
-            }
+        override suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<FoodLookupConfigDto> {
+            fetchConfigCallCount++
+            return configResult
         }
 
         override suspend fun searchGeneric(
-            settings: OnlineAssistanceSettings,
+            baseUrl: String,
+            apiKey: String,
             query: String
-        ): FoodLookupOutcome<List<RemoteFoodLookupResult>> {
-            searchCallCount++
-            return when (val r = searchResult) {
-                is FoodLookupOutcome.Success -> {
-                    val results = r.data.mapNotNull { dto ->
-                        with(RemoteFoodReferenceMapper) {
-                            dto.toRemoteResultOrNull("USDA", "USDA FoodData Central", true)
-                        }
-                    }
-                    if (results.isEmpty()) FoodLookupOutcome.Empty
-                    else FoodLookupOutcome.Success(results)
-                }
-                is FoodLookupOutcome.Error -> FoodLookupOutcome.Error(r.reason)
-                is FoodLookupOutcome.Empty -> FoodLookupOutcome.Empty
-            }
+        ): FoodLookupOutcome<GenericLookupDataDto> {
+            searchGenericCallCount++
+            searchGate?.await()
+            return searchResult
         }
+    }
+
+    class FakeMonotonicTimeSource : MonotonicTimeSource {
+        override fun nowMillis(): Long = 0L
     }
 }

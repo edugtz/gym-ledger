@@ -6,12 +6,14 @@ import com.edu.gymledger.data.remote.FoodLookupOutcome
 import com.edu.gymledger.data.remote.MonotonicTimeSource
 import com.edu.gymledger.data.remote.dto.FoodLookupConfigDto
 import com.edu.gymledger.data.remote.dto.FeaturesDto
+import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 import com.edu.gymledger.data.remote.dto.GenericLookupItemDto
 import com.edu.gymledger.data.remote.dto.NutritionPer100gDto
 import com.edu.gymledger.data.remote.dto.ProvidersDto
 import com.edu.gymledger.data.repository.OnlineAssistanceSettings
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -91,6 +93,19 @@ class RemoteFoodLookupRepositoryTest {
     }
 
     @Test
+    fun conservativeConfig_disablesLookup() {
+        val conservative = FoodLookupConfigDto(
+            onlineLookupAvailable = false,
+            providers = ProvidersDto(usda = false),
+            features = FeaturesDto(genericFoodSearch = false),
+            minQueryLength = 3,
+            safeMode = true
+        )
+        val availability = repository.getEffectiveAvailability(defaultSettings, conservative)
+        assertTrue(availability is OnlineSearchAvailability.RemoteDisabled)
+    }
+
+    @Test
     fun remoteProviderDisabled_returnsRemoteDisabled() {
         val config = enabledConfig.copy(providers = ProvidersDto(usda = false))
         val availability = repository.getEffectiveAvailability(defaultSettings, config)
@@ -162,6 +177,32 @@ class RemoteFoodLookupRepositoryTest {
     }
 
     @Test
+    fun configCache_endpointChange_doesNotReuseOtherEndpointConfig() = runTest {
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
+
+        repository.ensureConfig(defaultSettings)
+        val customSettings = defaultSettings.copy(foodLookupEndpoint = "https://custom.example.com/api/")
+        repository.ensureConfig(customSettings)
+
+        assertEquals(2, fakeClient.fetchConfigCallCount)
+        assertEquals(
+            "https://custom.example.com/api/",
+            fakeClient.fetchConfigBaseUrls.last()
+        )
+    }
+
+    @Test
+    fun configCache_resetConfigCache_clearsCache() = runTest {
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
+
+        repository.ensureConfig(defaultSettings)
+        repository.resetConfigCache()
+        repository.ensureConfig(defaultSettings)
+
+        assertEquals(2, fakeClient.fetchConfigCallCount)
+    }
+
+    @Test
     fun configFetchFailure_returnsConservativeConfig() = runTest {
         fakeClient.configResult = FoodLookupOutcome.Error(FoodLookupError.Transport)
 
@@ -187,17 +228,19 @@ class RemoteFoodLookupRepositoryTest {
     @Test
     fun searchGeneric_enabledValid_returnsSuccess() = runTest {
         fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
-        fakeClient.searchResult = FoodLookupOutcome.Success(listOf(
-            GenericLookupItemDto(
-                id = "usda:123",
-                source = "USDA",
-                type = "generic",
-                name = "Egg",
-                nutritionPer100g = NutritionPer100gDto(
-                    caloriesKcal = 143.0,
-                    proteinG = 12.6,
-                    carbohydrateG = 0.7,
-                    fatG = 9.5
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(
+            results = listOf(
+                GenericLookupItemDto(
+                    externalId = "usda:123",
+                    name = "Egg",
+                    description = "Egg",
+                    dataType = "survey_fndds_food",
+                    nutritionPer100g = NutritionPer100gDto(
+                        caloriesKcal = 143.0,
+                        proteinG = 12.6,
+                        carbohydrateG = 0.7,
+                        fatG = 9.5
+                    )
                 )
             )
         ))
@@ -210,9 +253,73 @@ class RemoteFoodLookupRepositoryTest {
     }
 
     @Test
+    fun searchGeneric_responseMetadataPreserved() = runTest {
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(
+            source = "USDA",
+            attribution = "USDA FoodData Central",
+            isApproximate = true,
+            results = listOf(
+                GenericLookupItemDto(
+                    externalId = "usda:123",
+                    name = "Egg",
+                    description = "Egg",
+                    dataType = "survey_fndds_food",
+                    nutritionPer100g = NutritionPer100gDto(
+                        caloriesKcal = 143.0,
+                        proteinG = 12.6,
+                        carbohydrateG = 0.7,
+                        fatG = 9.5
+                    )
+                )
+            )
+        ))
+
+        val result = repository.searchGeneric(defaultSettings, "egg")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val item = (result as FoodLookupOutcome.Success).data[0]
+        assertEquals("USDA", item.source)
+        assertEquals("USDA FoodData Central", item.attribution)
+        assertTrue(item.isApproximate)
+    }
+
+    @Test
+    fun searchGeneric_twoResults_distinctExternalIdsPreserved() = runTest {
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(
+            results = listOf(
+                GenericLookupItemDto(
+                    externalId = "usda:171287",
+                    name = "Whole egg, large",
+                    description = "Whole egg, large",
+                    dataType = "survey_fndds_food",
+                    nutritionPer100g = NutritionPer100gDto(143.0, 12.6, 0.7, 9.5)
+                ),
+                GenericLookupItemDto(
+                    externalId = "usda:171286",
+                    name = "Egg, whole, cooked",
+                    description = "Egg, whole, cooked",
+                    dataType = "survey_fndds_food",
+                    nutritionPer100g = NutritionPer100gDto(155.0, 12.5, 1.1, 10.6)
+                )
+            )
+        ))
+
+        val result = repository.searchGeneric(defaultSettings, "egg")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val items = (result as FoodLookupOutcome.Success).data
+        assertEquals(2, items.size)
+        assertEquals("usda:171287", items[0].externalId)
+        assertEquals("usda:171286", items[1].externalId)
+        assertNotEquals(items[0].externalId, items[1].externalId)
+    }
+
+    @Test
     fun searchGeneric_emptyProviderResults_returnsEmpty() = runTest {
         fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
-        fakeClient.searchResult = FoodLookupOutcome.Success(emptyList())
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData())
 
         val result = repository.searchGeneric(defaultSettings, "egg")
 
@@ -222,17 +329,14 @@ class RemoteFoodLookupRepositoryTest {
     @Test
     fun searchGeneric_allNutrientsNull_returnsEmpty() = runTest {
         fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig)
-        fakeClient.searchResult = FoodLookupOutcome.Success(listOf(
-            GenericLookupItemDto(
-                id = "usda:123",
-                source = "USDA",
-                type = "generic",
-                name = "Unknown",
-                nutritionPer100g = NutritionPer100gDto(
-                    caloriesKcal = null,
-                    proteinG = null,
-                    carbohydrateG = null,
-                    fatG = null
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(
+            results = listOf(
+                GenericLookupItemDto(
+                    externalId = "usda:123",
+                    name = "Unknown",
+                    description = "Unknown",
+                    dataType = "survey_fndds_food",
+                    nutritionPer100g = NutritionPer100gDto()
                 )
             )
         ))
@@ -264,20 +368,36 @@ class RemoteFoodLookupRepositoryTest {
 
     // --- Helpers ---
 
+    private fun genericData(
+        source: String = "USDA",
+        attribution: String = "USDA FoodData Central",
+        isApproximate: Boolean = true,
+        results: List<GenericLookupItemDto> = emptyList()
+    ) = GenericLookupDataDto(
+        query = "egg",
+        source = source,
+        attribution = attribution,
+        isApproximate = isApproximate,
+        results = results
+    )
+
     private fun assertFalse(value: Boolean) {
         org.junit.Assert.assertFalse(value)
     }
 
     class FakeFoodLookupClient : FoodLookupClient {
         var configResult: FoodLookupOutcome<FoodLookupConfigDto> = FoodLookupOutcome.Error(FoodLookupError.Transport)
-        var searchResult: FoodLookupOutcome<List<GenericLookupItemDto>> = FoodLookupOutcome.Success(emptyList())
+        var searchResult: FoodLookupOutcome<GenericLookupDataDto> = FoodLookupOutcome.Success(GenericLookupDataDto())
         var fetchConfigCallCount = 0
+            private set
+        var fetchConfigBaseUrls: MutableList<String> = mutableListOf()
             private set
         var searchGenericCallCount = 0
             private set
 
         override suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<FoodLookupConfigDto> {
             fetchConfigCallCount++
+            fetchConfigBaseUrls.add(baseUrl)
             return configResult
         }
 
@@ -285,7 +405,7 @@ class RemoteFoodLookupRepositoryTest {
             baseUrl: String,
             apiKey: String,
             query: String
-        ): FoodLookupOutcome<List<GenericLookupItemDto>> {
+        ): FoodLookupOutcome<GenericLookupDataDto> {
             searchGenericCallCount++
             return searchResult
         }

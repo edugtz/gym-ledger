@@ -9,9 +9,9 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
-import okhttp3.internal.connection.RealCall
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,25 +19,44 @@ class OkHttpFoodLookupClientTest {
 
     private val successConfigBody = """
         {
-            "onlineLookupAvailable": true,
-            "providers": { "usda": true, "openFoodFacts": false },
-            "features": { "genericFoodSearch": true, "barcodeLookup": false },
-            "minQueryLength": 3,
-            "safeMode": false
+            "ok": true,
+            "data": {
+                "onlineLookupAvailable": true,
+                "providers": { "usda": true, "openFoodFacts": false },
+                "features": { "genericFoodSearch": true, "barcodeLookup": false },
+                "minQueryLength": 3,
+                "safeMode": false
+            }
+        }
+    """.trimIndent()
+
+    private val conservativeConfigBody = """
+        {
+            "ok": true,
+            "data": {
+                "onlineLookupAvailable": false,
+                "providers": { "usda": false, "openFoodFacts": false },
+                "features": { "genericFoodSearch": false, "barcodeLookup": false },
+                "minQueryLength": 3,
+                "safeMode": true
+            }
         }
     """.trimIndent()
 
     private val successGenericBody = """
         {
+            "ok": true,
             "data": {
+                "query": "egg",
+                "source": "USDA",
+                "attribution": "USDA FoodData Central",
+                "isApproximate": true,
                 "results": [
                     {
-                        "id": "usda:171287",
-                        "source": "USDA",
-                        "type": "generic",
+                        "externalId": "usda:171287",
                         "name": "Whole egg, large",
+                        "description": "Whole egg, large",
                         "dataType": "survey_fndds_food",
-                        "description": null,
                         "nutritionPer100g": {
                             "caloriesKcal": 143.0,
                             "proteinG": 12.6,
@@ -50,9 +69,59 @@ class OkHttpFoodLookupClientTest {
         }
     """.trimIndent()
 
-    private val emptyResultsBody = """
-        { "data": { "results": [] } }
+    private val twoResultsGenericBody = """
+        {
+            "ok": true,
+            "data": {
+                "query": "egg",
+                "source": "USDA",
+                "attribution": "USDA FoodData Central",
+                "isApproximate": true,
+                "results": [
+                    {
+                        "externalId": "usda:171287",
+                        "name": "Whole egg, large",
+                        "description": "Whole egg, large",
+                        "dataType": "survey_fndds_food",
+                        "nutritionPer100g": {
+                            "caloriesKcal": 143.0,
+                            "proteinG": 12.6,
+                            "carbohydrateG": 0.7,
+                            "fatG": 9.5
+                        }
+                    },
+                    {
+                        "externalId": "usda:171286",
+                        "name": "Egg, whole, cooked",
+                        "description": "Egg, whole, cooked",
+                        "dataType": "survey_fndds_food",
+                        "nutritionPer100g": {
+                            "caloriesKcal": 155.0,
+                            "proteinG": 12.5,
+                            "carbohydrateG": 1.1,
+                            "fatG": 10.6
+                        }
+                    }
+                ]
+            }
+        }
     """.trimIndent()
+
+    private val emptyResultsBody = """
+        {
+            "ok": true,
+            "data": {
+                "query": "zzz",
+                "source": "USDA",
+                "attribution": "USDA FoodData Central",
+                "isApproximate": true,
+                "results": []
+            }
+        }
+    """.trimIndent()
+
+    private fun errorBody(code: String, message: String = "test") =
+        """{"ok":false,"error":{"code":"$code","message":"$message"}}"""
 
     @Test
     fun fetchConfig_correctRoute_noKeyHeader() = runTest {
@@ -74,6 +143,40 @@ class OkHttpFoodLookupClientTest {
     }
 
     @Test
+    fun fetchConfig_conservativeEnvelope_decodesFields() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, conservativeConfigBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.fetchConfig("https://example.com/")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val config = (result as FoodLookupOutcome.Success).data
+        assertFalse(config.onlineLookupAvailable)
+        assertTrue(config.safeMode)
+        assertFalse(config.providers.usda)
+        assertFalse(config.features.genericFoodSearch)
+    }
+
+    @Test
+    fun fetchConfig_envelopeOkFalse_returnsMalformed() = runTest {
+        val body = """
+            {
+                "ok": false,
+                "error": { "code": "lookup_disabled", "message": "Lookup is disabled" }
+            }
+        """.trimIndent()
+        val fakeCall = FakeCall(response = jsonResponse(200, body))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.fetchConfig("https://example.com/")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
     fun searchGeneric_correctRoute_withKeyHeader() = runTest {
         val fakeCall = FakeCall(
             response = jsonResponse(200, successGenericBody)
@@ -83,9 +186,9 @@ class OkHttpFoodLookupClientTest {
         val result = client.searchGeneric("https://example.com/", "test-api-key", "egg")
 
         assertTrue(result is FoodLookupOutcome.Success)
-        val items = (result as FoodLookupOutcome.Success).data
-        assertEquals(1, items.size)
-        assertEquals("Whole egg, large", items[0].name)
+        val data = (result as FoodLookupOutcome.Success).data
+        assertEquals(1, data.results.size)
+        assertEquals("Whole egg, large", data.results[0].name)
         assertEquals("test-api-key", fakeCall.capturedRequest!!.header("X-GymLedger-Key"))
         assertTrue(fakeCall.capturedRequest!!.url.encodedPath.contains("/v1/foods/generic"))
         assertEquals("egg", fakeCall.capturedRequest!!.url.queryParameter("q"))
@@ -117,7 +220,55 @@ class OkHttpFoodLookupClientTest {
     }
 
     @Test
-    fun searchGeneric_emptyResults_returnsEmpty() = runTest {
+    fun searchGeneric_externalIdPreserved() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, successGenericBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "egg")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val data = (result as FoodLookupOutcome.Success).data
+        assertEquals("usda:171287", data.results[0].externalId)
+    }
+
+    @Test
+    fun searchGeneric_metadataPreserved() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, successGenericBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "egg")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val data = (result as FoodLookupOutcome.Success).data
+        assertEquals("egg", data.query)
+        assertEquals("USDA", data.source)
+        assertEquals("USDA FoodData Central", data.attribution)
+        assertTrue(data.isApproximate)
+    }
+
+    @Test
+    fun searchGeneric_twoResults_distinctExternalIds() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, twoResultsGenericBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "egg")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val data = (result as FoodLookupOutcome.Success).data
+        assertEquals(2, data.results.size)
+        assertEquals("usda:171287", data.results[0].externalId)
+        assertEquals("usda:171286", data.results[1].externalId)
+        assertNotEquals(data.results[0].externalId, data.results[1].externalId)
+    }
+
+    @Test
+    fun searchGeneric_emptyResults_returnsSuccessWithEmptyData() = runTest {
         val fakeCall = FakeCall(
             response = jsonResponse(200, emptyResultsBody)
         )
@@ -125,13 +276,14 @@ class OkHttpFoodLookupClientTest {
 
         val result = client.searchGeneric("https://example.com/", "key", "query")
 
-        assertTrue(result is FoodLookupOutcome.Empty)
+        assertTrue(result is FoodLookupOutcome.Success)
+        assertTrue((result as FoodLookupOutcome.Success).data.results.isEmpty())
     }
 
     @Test
-    fun http400_returnsInvalidQuery() = runTest {
+    fun http400_invalidQuery() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(400, """{"error":"invalid_query"}""")
+            response = jsonResponse(400, errorBody("invalid_query"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -142,9 +294,9 @@ class OkHttpFoodLookupClientTest {
     }
 
     @Test
-    fun http401_returnsUnauthorized() = runTest {
+    fun http401_unauthorized() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(401, """{"error":"unauthorized"}""")
+            response = jsonResponse(401, errorBody("unauthorized"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -155,9 +307,21 @@ class OkHttpFoodLookupClientTest {
     }
 
     @Test
-    fun http429_returnsBudgetExceeded() = runTest {
+    fun http404_notFound_returnsEmpty() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(429, """{"error":"budget_exceeded"}""")
+            response = jsonResponse(404, errorBody("not_found"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Empty)
+    }
+
+    @Test
+    fun http429_budgetExceeded() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(429, errorBody("budget_exceeded"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -168,9 +332,61 @@ class OkHttpFoodLookupClientTest {
     }
 
     @Test
+    fun http429_providerRateLimited_isProviderErrorNotBudget() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(429, errorBody("provider_rate_limited"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ProviderError, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http502_providerError() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(502, errorBody("provider_error"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ProviderError, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http502_providerUnavailable_mapsProviderError() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("provider_unavailable"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ProviderError, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
     fun http503_lookupDisabled() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(503, """{"error":"lookup_disabled"}""")
+            response = jsonResponse(503, errorBody("lookup_disabled"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.LookupDisabled, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http503_onlineLookupDisabled_mapsLookupDisabled() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("online_lookup_disabled"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -183,7 +399,7 @@ class OkHttpFoodLookupClientTest {
     @Test
     fun http503_providerDisabled() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(503, """{"error":"provider_disabled"}""")
+            response = jsonResponse(503, errorBody("provider_disabled"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -196,7 +412,7 @@ class OkHttpFoodLookupClientTest {
     @Test
     fun http503_featureDisabled() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(503, """{"error":"feature_disabled"}""")
+            response = jsonResponse(503, errorBody("feature_disabled"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -209,7 +425,7 @@ class OkHttpFoodLookupClientTest {
     @Test
     fun http503_configurationError() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(503, """{"error":"configuration_error"}""")
+            response = jsonResponse(503, errorBody("configuration_error"))
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -222,7 +438,85 @@ class OkHttpFoodLookupClientTest {
     @Test
     fun http503_providerError() = runTest {
         val fakeCall = FakeCall(
-            response = jsonResponse(503, """{"error":"provider_error"}""")
+            response = jsonResponse(503, errorBody("provider_error"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ProviderError, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http504_providerTimeout_mapsTransport() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(504, errorBody("provider_timeout"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.Transport, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http503_malformedBody_statusFallbackLookupDisabled() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, "not json {{{")
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.LookupDisabled, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun unknownErrorCode_statusFallback() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("mystery_code"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.LookupDisabled, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http429_noBody_statusFallbackBudgetExceeded() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(429, "")
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.BudgetExceeded, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http500_unknownStatus_mapsTransport() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(500, "{}")
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.Transport, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun http502_noBody_statusFallbackProviderError() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(502, "")
         )
         val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
 
@@ -283,8 +577,8 @@ class OkHttpFoodLookupClientTest {
         val result = client.searchGeneric("https://example.com/", "key", "egg")
 
         assertTrue(result is FoodLookupOutcome.Success)
-        val item = (result as FoodLookupOutcome.Success).data[0]
-        assertEquals("usda:171287", item.id)
+        val item = (result as FoodLookupOutcome.Success).data.results[0]
+        assertEquals("usda:171287", item.externalId)
         assertEquals(143.0, item.nutritionPer100g.caloriesKcal!!, 0.001)
         assertEquals(12.6, item.nutritionPer100g.proteinG!!, 0.001)
         assertEquals(0.7, item.nutritionPer100g.carbohydrateG!!, 0.001)

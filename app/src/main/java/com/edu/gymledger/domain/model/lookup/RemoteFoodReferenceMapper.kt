@@ -19,12 +19,13 @@ object RemoteFoodReferenceMapper {
         if (cal == null || pro == null || carb == null || fat == null) return null
         if (cal < 0.0 || pro < 0.0 || carb < 0.0 || fat < 0.0) return null
         if (!cal.isFinite() || !pro.isFinite() || !carb.isFinite() || !fat.isFinite()) return null
+        if (cal > Int.MAX_VALUE.toDouble()) return null
 
         val roundedCalories = cal.roundToInt()
         if (roundedCalories < 0) return null
 
         return RemoteFoodLookupResult(
-            externalId = id,
+            externalId = externalId,
             name = name,
             description = description,
             dataType = dataType,

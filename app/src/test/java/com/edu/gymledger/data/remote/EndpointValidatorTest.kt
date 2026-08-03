@@ -41,6 +41,27 @@ class EndpointValidatorTest {
     }
 
     @Test
+    fun validHttpsUrl_doubleTrailingSlash_normalizedToOne() {
+        val result = EndpointValidator.resolve("https://example.com/api//")
+        assertTrue(result is EndpointResult.Valid)
+        assertEquals("/api/", (result as EndpointResult.Valid).url.encodedPath)
+    }
+
+    @Test
+    fun validHttpsUrl_tripleTrailingSlash_normalizedToOne() {
+        val result = EndpointValidator.resolve("https://example.com/api///")
+        assertTrue(result is EndpointResult.Valid)
+        assertEquals("/api/", (result as EndpointResult.Valid).url.encodedPath)
+    }
+
+    @Test
+    fun validHttpsUrl_rootPathMultipleSlashes_normalizedToOne() {
+        val result = EndpointValidator.resolve("https://example.com///")
+        assertTrue(result is EndpointResult.Valid)
+        assertEquals("/", (result as EndpointResult.Valid).url.encodedPath)
+    }
+
+    @Test
     fun httpScheme_returnsInvalid() {
         val result = EndpointValidator.resolve("http://example.com/api")
         assertTrue(result is EndpointResult.Invalid)

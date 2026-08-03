@@ -82,11 +82,10 @@ class SmartFoodEntryViewModel(
 
     private fun updateOnlineAvailability(settings: OnlineAssistanceSettings) {
         val availability = remoteFoodLookupRepository.getEffectiveAvailability(settings, null)
-        val isAvailable = availability is OnlineSearchAvailability.Available
         _uiState.value = _uiState.value.copy(
             isOnlineAvailable = settings.onlineFoodLookupEnabled,
             onlineAvailability = availability,
-            onlineError = availabilityToMessage(availability)
+            onlineError = null
         )
     }
 
@@ -94,7 +93,6 @@ class SmartFoodEntryViewModel(
         _uiState.value = SmartFoodEntryUiState()
         searchJob?.cancel()
         searchJob = null
-        remoteFoodLookupRepository.resetConfigCache()
         collectSettings()
     }
 
@@ -118,18 +116,27 @@ class SmartFoodEntryViewModel(
         _uiState.value = current.copy(
             onlineMode = enabled,
             onlineResults = emptyList(),
-            onlineError = if (enabled) current.onlineError else null,
+            onlineError = null,
             isOnlineSearching = false
         )
 
         if (enabled) {
             viewModelScope.launch {
-            val settings = settingsFlow.first()
+                val settings = settingsFlow.first()
+                val localAvailability = remoteFoodLookupRepository.getEffectiveAvailability(settings, null)
+                if (localAvailability !is OnlineSearchAvailability.RemoteDisabled &&
+                    localAvailability !is OnlineSearchAvailability.Available
+                ) {
+                    _uiState.value = _uiState.value.copy(
+                        onlineAvailability = localAvailability
+                    )
+                    return@launch
+                }
+
                 val config = remoteFoodLookupRepository.ensureConfig(settings)
                 val availability = remoteFoodLookupRepository.getEffectiveAvailability(settings, config)
                 _uiState.value = _uiState.value.copy(
                     onlineAvailability = availability,
-                    onlineError = availabilityToMessage(availability),
                     minQueryLength = config.minQueryLength
                 )
             }
@@ -144,6 +151,7 @@ class SmartFoodEntryViewModel(
         val state = _uiState.value
         if (state.isOnlineSearching) return
         if (!state.onlineMode) return
+        if (state.onlineAvailability !is OnlineSearchAvailability.Available) return
 
         val query = state.onlineQuery.trim()
         if (query.length < state.minQueryLength) {
@@ -392,19 +400,6 @@ class SmartFoodEntryViewModel(
         searchJob?.cancel()
         searchJob = null
         _uiState.value = _uiState.value.copy(isOnlineSearching = false)
-    }
-
-    private fun availabilityToMessage(availability: OnlineSearchAvailability): String? {
-        return when (availability) {
-            is OnlineSearchAvailability.Disabled -> null
-            is OnlineSearchAvailability.NotConfigured -> "Online lookup isn't configured. Add an API key in Settings."
-            is OnlineSearchAvailability.UsdaDisabled -> "Online lookup isn't available. Enable USDA in Settings."
-            is OnlineSearchAvailability.SafeMode -> "Online lookup isn't available while safe mode is on."
-            is OnlineSearchAvailability.InvalidEndpoint -> "The lookup endpoint URL is invalid. Check Settings."
-            is OnlineSearchAvailability.RemoteDisabled -> "Online lookup is temporarily disabled."
-            is OnlineSearchAvailability.Available -> null
-            else -> null
-        }
     }
 
     private fun errorMessageFor(error: FoodLookupError): String {

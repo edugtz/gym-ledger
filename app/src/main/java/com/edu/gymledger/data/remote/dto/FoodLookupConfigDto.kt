@@ -3,6 +3,12 @@ package com.edu.gymledger.data.remote.dto
 import kotlinx.serialization.Serializable
 
 @Serializable
+data class FoodLookupConfigResponseDto(
+    val ok: Boolean = false,
+    val data: FoodLookupConfigDto = FoodLookupConfigDto()
+)
+
+@Serializable
 data class FoodLookupConfigDto(
     val onlineLookupAvailable: Boolean = false,
     val providers: ProvidersDto = ProvidersDto(),

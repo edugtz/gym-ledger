@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
@@ -298,6 +299,9 @@ private fun OnlineSearchSection(
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(
+            onSearch = { onSubmit() }
+        ),
         enabled = !isLoading && availability is OnlineSearchAvailability.Available
     )
 
@@ -327,7 +331,7 @@ private fun OnlineSearchSection(
 
     Spacer(Modifier.height(12.dp))
 
-    if (error != null) {
+    if (error != null && availability is OnlineSearchAvailability.Available) {
         Text(
             text = error,
             style = MaterialTheme.typography.bodyMedium,

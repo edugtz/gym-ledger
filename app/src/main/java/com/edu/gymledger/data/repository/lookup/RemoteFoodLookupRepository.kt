@@ -7,7 +7,7 @@ import com.edu.gymledger.data.remote.FoodLookupError
 import com.edu.gymledger.data.remote.FoodLookupOutcome
 import com.edu.gymledger.data.remote.MonotonicTimeSource
 import com.edu.gymledger.data.remote.dto.FoodLookupConfigDto
-import com.edu.gymledger.data.remote.dto.GenericLookupItemDto
+import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 import com.edu.gymledger.data.repository.OnlineAssistanceSettings
 import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
 import com.edu.gymledger.domain.model.lookup.RemoteFoodReferenceMapper.toRemoteResultOrNull
@@ -20,6 +20,7 @@ open class RemoteFoodLookupRepository(
 ) {
 
     private var cachedConfig: FoodLookupConfigDto? = null
+    private var cachedEndpoint: String? = null
     private var configFetchTime: Long = 0L
 
     private val configCacheDurationMs = 5 * 60 * 1000L
@@ -54,19 +55,21 @@ open class RemoteFoodLookupRepository(
     }
 
     open suspend fun ensureConfig(settings: OnlineAssistanceSettings): FoodLookupConfigDto {
-        val now = timeSource.nowMillis()
-        val cached = cachedConfig
-        if (cached != null && (now - configFetchTime) < configCacheDurationMs) {
-            return cached
-        }
-
         val endpoint = EndpointValidator.resolve(settings.foodLookupEndpoint)
         if (endpoint is EndpointResult.Invalid) return conservativeConfig()
 
         val baseUrl = (endpoint as EndpointResult.Valid).url.toString()
+
+        val now = timeSource.nowMillis()
+        val cached = cachedConfig
+        if (cached != null && cachedEndpoint == baseUrl && (now - configFetchTime) < configCacheDurationMs) {
+            return cached
+        }
+
         return when (val outcome = client.fetchConfig(baseUrl)) {
             is FoodLookupOutcome.Success -> {
                 cachedConfig = outcome.data
+                cachedEndpoint = baseUrl
                 configFetchTime = now
                 outcome.data
             }
@@ -120,12 +123,10 @@ open class RemoteFoodLookupRepository(
 
         return when (val outcome = client.searchGeneric(baseUrl, settings.foodLookupApiKey, trimmed)) {
             is FoodLookupOutcome.Success -> {
-                val source = "USDA"
-                val attribution = "USDA FoodData Central"
-                val isApproximate = true
+                val data: GenericLookupDataDto = outcome.data
 
-                val results = outcome.data.mapNotNull { dto ->
-                    dto.toRemoteResultOrNull(source, attribution, isApproximate)
+                val results = data.results.mapNotNull { dto ->
+                    dto.toRemoteResultOrNull(data.source, data.attribution, data.isApproximate)
                 }
 
                 if (results.isEmpty()) {
@@ -141,6 +142,7 @@ open class RemoteFoodLookupRepository(
 
     fun resetConfigCache() {
         cachedConfig = null
+        cachedEndpoint = null
         configFetchTime = 0L
     }
 

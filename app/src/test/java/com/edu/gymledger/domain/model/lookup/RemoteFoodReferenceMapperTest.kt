@@ -19,10 +19,10 @@ class RemoteFoodReferenceMapperTest {
         carbs: Double? = 20.0,
         fat: Double? = 5.0
     ) = GenericLookupItemDto(
-        id = id,
-        source = "USDA",
-        type = "generic",
+        externalId = id,
         name = name,
+        description = name,
+        dataType = "survey_fndds_food",
         nutritionPer100g = NutritionPer100gDto(
             caloriesKcal = calories,
             proteinG = protein,
@@ -172,6 +172,25 @@ class RemoteFoodReferenceMapperTest {
         val dto = itemDto(calories = 0.0, protein = 0.0, carbs = 0.0, fat = 0.0)
         val result = dto.toRemoteResultOrNull("USDA", "attr", true)
         assertEquals(0, result!!.caloriesPer100g)
+    }
+
+    @Test
+    fun caloriesAtIntMax_succeeds() {
+        val dto = itemDto(calories = Int.MAX_VALUE.toDouble(), protein = 10.0, carbs = 20.0, fat = 5.0)
+        val result = dto.toRemoteResultOrNull("USDA", "attr", true)
+        assertEquals(Int.MAX_VALUE, result!!.caloriesPer100g)
+    }
+
+    @Test
+    fun caloriesAboveIntRange_filtered() {
+        val dto = itemDto(calories = Int.MAX_VALUE.toDouble() + 1.0, protein = 10.0, carbs = 20.0, fat = 5.0)
+        assertNull(dto.toRemoteResultOrNull("USDA", "attr", true))
+    }
+
+    @Test
+    fun caloriesHugeFiniteValue_filtered() {
+        val dto = itemDto(calories = 1.0e30, protein = 10.0, carbs = 20.0, fat = 5.0)
+        assertNull(dto.toRemoteResultOrNull("USDA", "attr", true))
     }
 
     @Test

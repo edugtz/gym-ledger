@@ -1,7 +1,7 @@
 package com.edu.gymledger.data.remote
 
 import com.edu.gymledger.data.remote.dto.FoodLookupConfigDto
-import com.edu.gymledger.data.remote.dto.GenericLookupItemDto
+import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 
 interface FoodLookupClient {
     suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<FoodLookupConfigDto>
@@ -9,5 +9,5 @@ interface FoodLookupClient {
         baseUrl: String,
         apiKey: String,
         query: String
-    ): FoodLookupOutcome<List<GenericLookupItemDto>>
+    ): FoodLookupOutcome<GenericLookupDataDto>
 }

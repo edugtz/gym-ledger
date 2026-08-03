@@ -31,7 +31,8 @@ object EndpointValidator {
     }
 
     private fun normalizeTrailingSlash(path: String): String {
-        return if (path.endsWith("/")) path else "$path/"
+        val trimmed = path.trimEnd('/')
+        return if (trimmed.isEmpty()) "/" else "$trimmed/"
     }
 }
 
