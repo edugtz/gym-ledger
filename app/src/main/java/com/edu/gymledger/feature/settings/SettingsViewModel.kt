@@ -12,7 +12,6 @@ import kotlinx.coroutines.launch
 
 data class SettingsUiState(
     val onlineAssistance: OnlineAssistanceSettings = OnlineAssistanceSettings(),
-    val showEndpointHelper: Boolean = false,
     val showApiKeyHelper: Boolean = false
 )
 
@@ -24,7 +23,6 @@ class SettingsViewModel(
         .map { settings ->
             SettingsUiState(
                 onlineAssistance = settings,
-                showEndpointHelper = settings.onlineFoodLookupEnabled && settings.foodLookupEndpoint.isBlank(),
                 showApiKeyHelper = settings.onlineFoodLookupEnabled && settings.foodLookupApiKey.isBlank()
             )
         }

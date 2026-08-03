@@ -63,7 +63,6 @@ fun SettingsScreen(
         ) {
             OnlineAssistanceSection(
                 settings = settings,
-                showEndpointHelper = uiState.showEndpointHelper,
                 showApiKeyHelper = uiState.showApiKeyHelper,
                 onOnlineLookupEnabledChange = viewModel::updateOnlineFoodLookupEnabled,
                 onEndpointChange = viewModel::updateFoodLookupEndpoint,
@@ -79,7 +78,6 @@ fun SettingsScreen(
 @Composable
 private fun OnlineAssistanceSection(
     settings: com.edu.gymledger.data.repository.OnlineAssistanceSettings,
-    showEndpointHelper: Boolean,
     showApiKeyHelper: Boolean,
     onOnlineLookupEnabledChange: (Boolean) -> Unit,
     onEndpointChange: (String) -> Unit,
@@ -107,10 +105,6 @@ private fun OnlineAssistanceSection(
             checked = settings.onlineFoodLookupEnabled,
             onCheckedChange = onOnlineLookupEnabledChange
         )
-
-        if (showEndpointHelper) {
-            HelperText("Enter an endpoint URL to enable online lookup.")
-        }
 
         OutlinedTextField(
             value = settings.foodLookupEndpoint,

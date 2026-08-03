@@ -23,7 +23,10 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,6 +39,7 @@ import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -49,6 +53,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.edu.gymledger.app.AppContainer
 import com.edu.gymledger.domain.model.FoodReference
+import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
+import com.edu.gymledger.data.repository.lookup.OnlineSearchAvailability
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,7 +63,9 @@ fun SmartFoodEntrySheet(
     viewModel: SmartFoodEntryViewModel = viewModel(
         factory = SmartFoodEntryViewModelFactory(
             referenceRepository = AppContainer.foodReferenceRepository,
-            foodRepository = AppContainer.foodRepository
+            foodRepository = AppContainer.foodRepository,
+            remoteFoodLookupRepository = AppContainer.remoteFoodLookupRepository,
+            settingsFlow = AppContainer.settingsRepository.onlineAssistanceSettings
         )
     )
 ) {
@@ -66,6 +74,12 @@ fun SmartFoodEntrySheet(
 
     LaunchedEffect(Unit) {
         viewModel.resetState()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.cancelSearch()
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -82,7 +96,10 @@ fun SmartFoodEntrySheet(
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            viewModel.cancelSearch()
+            onDismiss()
+        },
         sheetState = sheetState
     ) {
         Column(
@@ -106,12 +123,34 @@ fun SmartFoodEntrySheet(
             Spacer(Modifier.height(20.dp))
 
             if (uiState.selectedReference == null) {
-                SmartSearchSection(
-                    query = uiState.searchQuery,
-                    results = uiState.searchResults,
-                    onQueryChange = viewModel::onSearchQueryChange,
-                    onSelect = viewModel::selectReference
-                )
+                if (uiState.isOnlineAvailable) {
+                    OnlineModeSelector(
+                        onlineMode = uiState.onlineMode,
+                        onToggleOnlineMode = viewModel::toggleOnlineMode
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                if (uiState.onlineMode && uiState.isOnlineAvailable) {
+                    OnlineSearchSection(
+                        query = uiState.onlineQuery,
+                        results = uiState.onlineResults,
+                        isLoading = uiState.isOnlineSearching,
+                        error = uiState.onlineError,
+                        availability = uiState.onlineAvailability,
+                        minQueryLength = uiState.minQueryLength,
+                        onQueryChange = viewModel::onOnlineQueryChange,
+                        onSubmit = viewModel::submitOnlineSearch,
+                        onSelect = viewModel::selectOnlineResult
+                    )
+                } else {
+                    SmartSearchSection(
+                        query = uiState.searchQuery,
+                        results = uiState.searchResults,
+                        onQueryChange = viewModel::onSearchQueryChange,
+                        onSelect = viewModel::selectReference
+                    )
+                }
             } else {
                 SmartSelectedSection(
                     reference = uiState.selectedReference!!,
@@ -160,6 +199,241 @@ fun SmartFoodEntrySheet(
                         enabled = !uiState.isSaving
                     ) {
                         Text(if (uiState.isSaving) "Saving..." else "Save as custom food")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnlineModeSelector(
+    onlineMode: Boolean,
+    onToggleOnlineMode: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FilterChip(
+            selected = !onlineMode,
+            onClick = { onToggleOnlineMode(false) },
+            label = { Text("Local reference") },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+        FilterChip(
+            selected = onlineMode,
+            onClick = { onToggleOnlineMode(true) },
+            label = { Text("Online search") },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+    }
+}
+
+@Composable
+private fun OnlineSearchSection(
+    query: String,
+    results: List<RemoteFoodLookupResult>,
+    isLoading: Boolean,
+    error: String?,
+    availability: OnlineSearchAvailability,
+    minQueryLength: Int,
+    onQueryChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onSelect: (RemoteFoodLookupResult) -> Unit
+) {
+    val availabilityMessage = when (availability) {
+        is OnlineSearchAvailability.NotConfigured -> "Online lookup isn't configured. Add an API key in Settings."
+        is OnlineSearchAvailability.UsdaDisabled -> "Online lookup isn't available. Enable USDA in Settings."
+        is OnlineSearchAvailability.SafeMode -> "Online lookup isn't available while safe mode is on."
+        is OnlineSearchAvailability.InvalidEndpoint -> "The lookup endpoint URL is invalid. Check Settings."
+        is OnlineSearchAvailability.RemoteDisabled -> "Online lookup is temporarily disabled."
+        is OnlineSearchAvailability.Disabled -> null
+        is OnlineSearchAvailability.Available -> null
+    }
+
+    if (availabilityMessage != null) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+            )
+        ) {
+            Text(
+                text = availabilityMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        label = { Text("Search foods online") },
+        leadingIcon = {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        trailingIcon = {
+            if (query.isNotBlank()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(
+                        Icons.Default.Clear,
+                        contentDescription = "Clear search",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        enabled = !isLoading && availability is OnlineSearchAvailability.Available
+    )
+
+    Spacer(Modifier.height(8.dp))
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End
+    ) {
+        Button(
+            onClick = onSubmit,
+            enabled = !isLoading &&
+                query.trim().length >= minQueryLength &&
+                availability is OnlineSearchAvailability.Available
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text("Search online")
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
+
+    if (error != null) {
+        Text(
+            text = error,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+    }
+
+    if (results.isNotEmpty()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(280.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(results, key = { it.externalId }) { result ->
+                OnlineResultRow(
+                    result = result,
+                    onClick = { onSelect(result) }
+                )
+            }
+        }
+    } else if (!isLoading && query.isNotBlank() && query.trim().length >= minQueryLength && error == null) {
+        Text(
+            text = "No foods found. Try another term.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 24.dp)
+        )
+    } else if (!isLoading && query.isBlank()) {
+        Text(
+            text = "Enter at least $minQueryLength characters to search online.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.padding(vertical = 24.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OnlineResultRow(
+    result: RemoteFoodLookupResult,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(MaterialTheme.shapes.small)
+                    .background(MaterialTheme.colorScheme.tertiary),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "R",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onTertiary
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = result.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "${result.caloriesPer100g} kcal per 100 g",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    SuggestionChip(
+                        onClick = {},
+                        label = { Text(result.source) },
+                        enabled = false,
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            disabledLabelColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    if (result.isApproximate) {
+                        SuggestionChip(
+                            onClick = {},
+                            label = { Text("Approximate") },
+                            enabled = false,
+                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                disabledLabelColor = MaterialTheme.colorScheme.tertiary
+                            )
+                        )
                     }
                 }
             }
