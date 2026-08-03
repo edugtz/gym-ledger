@@ -11,8 +11,6 @@ import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 import com.edu.gymledger.data.repository.OnlineAssistanceSettings
 import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
 import com.edu.gymledger.domain.model.lookup.RemoteFoodReferenceMapper.toRemoteResultOrNull
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 
 open class RemoteFoodLookupRepository(
     private val client: FoodLookupClient,
@@ -160,18 +158,6 @@ open class RemoteFoodLookupRepository(
             minQueryLength = 3,
             safeMode = true
         )
-    }
-
-    private fun mapAvailabilityToError(availability: OnlineSearchAvailability): FoodLookupError {
-        return when (availability) {
-            is OnlineSearchAvailability.Disabled -> FoodLookupError.Transport
-            is OnlineSearchAvailability.NotConfigured -> FoodLookupError.Unauthorized
-            is OnlineSearchAvailability.UsdaDisabled -> FoodLookupError.ProviderDisabled
-            is OnlineSearchAvailability.SafeMode -> FoodLookupError.LookupDisabled
-            is OnlineSearchAvailability.InvalidEndpoint -> FoodLookupError.Transport
-            is OnlineSearchAvailability.RemoteDisabled -> FoodLookupError.LookupDisabled
-            is OnlineSearchAvailability.Available -> FoodLookupError.Transport
-        }
     }
 }
 

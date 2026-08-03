@@ -177,6 +177,75 @@ class OkHttpFoodLookupClientTest {
     }
 
     @Test
+    fun fetchConfig_missingDataField_returnsMalformed() = runTest {
+        val fakeCall = FakeCall(response = jsonResponse(200, """{"ok": true}"""))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.fetchConfig("https://example.com/")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun fetchConfig_nullData_returnsMalformed() = runTest {
+        val fakeCall = FakeCall(response = jsonResponse(200, """{"ok": true, "data": null}"""))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.fetchConfig("https://example.com/")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun fetchConfig_missingOk_returnsMalformed() = runTest {
+        val body = """{"data": {"onlineLookupAvailable": true}}"""
+        val fakeCall = FakeCall(response = jsonResponse(200, body))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.fetchConfig("https://example.com/")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun searchGeneric_okFalseOn200_returnsMalformed() = runTest {
+        val body = """{"ok": false, "error": {"code": "not_found", "message": "Not found"}}"""
+        val fakeCall = FakeCall(response = jsonResponse(200, body))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun searchGeneric_nullData_returnsMalformed() = runTest {
+        val fakeCall = FakeCall(response = jsonResponse(200, """{"ok": true, "data": null}"""))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun searchGeneric_missingOk_returnsMalformed() = runTest {
+        val body = """{"data": {"query": "egg", "source": "USDA", "results": []}}"""
+        val fakeCall = FakeCall(response = jsonResponse(200, body))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.searchGeneric("https://example.com/", "key", "query")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
     fun searchGeneric_correctRoute_withKeyHeader() = runTest {
         val fakeCall = FakeCall(
             response = jsonResponse(200, successGenericBody)

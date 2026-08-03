@@ -137,6 +137,8 @@ fun SmartFoodEntrySheet(
                         query = uiState.onlineQuery,
                         results = uiState.onlineResults,
                         isLoading = uiState.isOnlineSearching,
+                        isCheckingOnlineAvailability = uiState.isCheckingOnlineAvailability,
+                        hasSubmittedOnlineSearch = uiState.hasSubmittedOnlineSearch,
                         error = uiState.onlineError,
                         availability = uiState.onlineAvailability,
                         minQueryLength = uiState.minQueryLength,
@@ -240,6 +242,8 @@ private fun OnlineSearchSection(
     query: String,
     results: List<RemoteFoodLookupResult>,
     isLoading: Boolean,
+    isCheckingOnlineAvailability: Boolean,
+    hasSubmittedOnlineSearch: Boolean,
     error: String?,
     availability: OnlineSearchAvailability,
     minQueryLength: Int,
@@ -252,12 +256,39 @@ private fun OnlineSearchSection(
         is OnlineSearchAvailability.UsdaDisabled -> "Online lookup isn't available. Enable USDA in Settings."
         is OnlineSearchAvailability.SafeMode -> "Online lookup isn't available while safe mode is on."
         is OnlineSearchAvailability.InvalidEndpoint -> "The lookup endpoint URL is invalid. Check Settings."
-        is OnlineSearchAvailability.RemoteDisabled -> "Online lookup is temporarily disabled."
+        is OnlineSearchAvailability.RemoteDisabled ->
+            if (isCheckingOnlineAvailability) null else "Online lookup is temporarily disabled."
         is OnlineSearchAvailability.Disabled -> null
         is OnlineSearchAvailability.Available -> null
     }
 
-    if (availabilityMessage != null) {
+    if (isCheckingOnlineAvailability) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = "Checking online availability...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+    } else if (availabilityMessage != null) {
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -354,16 +385,16 @@ private fun OnlineSearchSection(
                 )
             }
         }
-    } else if (!isLoading && query.isNotBlank() && query.trim().length >= minQueryLength && error == null) {
-        Text(
-            text = "No foods found. Try another term.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 24.dp)
-        )
-    } else if (!isLoading && query.isBlank()) {
+    } else if (!isLoading && query.trim().length < minQueryLength) {
         Text(
             text = "Enter at least $minQueryLength characters to search online.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.padding(vertical = 24.dp)
+        )
+    } else if (!isLoading && !hasSubmittedOnlineSearch) {
+        Text(
+            text = "Press Search online to search.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             modifier = Modifier.padding(vertical = 24.dp)

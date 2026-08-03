@@ -331,6 +331,142 @@ class SmartFoodEntryViewModelRemoteTest {
         assertEquals(0, fakeClient.searchGenericCallCount)
     }
 
+    // --- Stale search state cleared on query change (Fix 1) ---
+
+    @Test
+    fun onOnlineQueryChange_clearsStaleResults() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Success(genericData(listOf(eggItemDto())))
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.onOnlineQueryChange("egg")
+        viewModel.submitOnlineSearch()
+        advanceUntilIdle()
+        assertEquals(1, viewModel.uiState.value.onlineResults.size)
+
+        viewModel.onOnlineQueryChange("chicken")
+
+        val state = viewModel.uiState.value
+        assertEquals("chicken", state.onlineQuery)
+        assertTrue(state.onlineResults.isEmpty())
+        assertEquals(null, state.onlineError)
+        assertFalse(state.hasSubmittedOnlineSearch)
+    }
+
+    @Test
+    fun onOnlineQueryChange_clearsEmptyResultState() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Success(emptyData())
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.onOnlineQueryChange("zzz")
+        viewModel.submitOnlineSearch()
+        advanceUntilIdle()
+        assertNotNull(viewModel.uiState.value.onlineError)
+
+        viewModel.onOnlineQueryChange("egg")
+
+        val state = viewModel.uiState.value
+        assertEquals(null, state.onlineError)
+        assertFalse(state.hasSubmittedOnlineSearch)
+        assertTrue(state.onlineResults.isEmpty())
+    }
+
+    // --- Empty-result state only after actual submission (Fix 2) ---
+
+    @Test
+    fun typingValidQueryWithoutSubmit_noEmptyState() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.onOnlineQueryChange("egg")
+
+        val state = viewModel.uiState.value
+        assertTrue(state.onlineQuery.trim().length >= state.minQueryLength)
+        assertFalse(state.hasSubmittedOnlineSearch)
+        assertEquals(null, state.onlineError)
+        assertTrue(state.onlineResults.isEmpty())
+    }
+
+    @Test
+    fun submitOnlineSearch_emptyResult_setsEmptyMessage() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.searchResult = FoodLookupOutcome.Success(emptyData())
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.onOnlineQueryChange("zzz")
+        viewModel.submitOnlineSearch()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.hasSubmittedOnlineSearch)
+        assertTrue(state.onlineResults.isEmpty())
+        assertEquals("No foods found online. Try another term or add it manually.", state.onlineError)
+    }
+
+    // --- Config fetch cancellation (Fix 3) ---
+
+    @Test
+    fun leavingOnlineMode_cancelsPendingConfigFetch() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.configGate = CompletableDeferred()
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.onlineMode)
+        assertTrue(viewModel.uiState.value.isCheckingOnlineAvailability)
+
+        viewModel.toggleOnlineMode(false)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.onlineMode)
+        assertFalse(viewModel.uiState.value.isCheckingOnlineAvailability)
+
+        fakeClient.configGate!!.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.onlineMode)
+        assertFalse(state.isCheckingOnlineAvailability)
+        assertTrue(state.onlineAvailability !is OnlineSearchAvailability.Available)
+    }
+
+    @Test
+    fun cancelSearch_cancelsPendingConfigFetch() = runTest {
+        settingsFlow.value = enabledSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(enabledConfig())
+        fakeClient.configGate = CompletableDeferred()
+        advanceUntilIdle()
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        viewModel.cancelSearch()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isCheckingOnlineAvailability)
+
+        fakeClient.configGate!!.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isCheckingOnlineAvailability)
+        assertTrue(state.onlineAvailability !is OnlineSearchAvailability.Available)
+    }
+
     @Test
     fun selectOnlineResult_prefillsEditableFields() = runTest {
         val result = RemoteFoodLookupResult(
@@ -539,6 +675,7 @@ class SmartFoodEntryViewModelRemoteTest {
     class FakeFoodLookupClient : FoodLookupClient {
         var configResult: FoodLookupOutcome<FoodLookupConfigDto> = FoodLookupOutcome.Error(FoodLookupError.Transport)
         var searchResult: FoodLookupOutcome<GenericLookupDataDto> = FoodLookupOutcome.Success(GenericLookupDataDto())
+        var configGate: CompletableDeferred<Unit>? = null
         var searchGate: CompletableDeferred<Unit>? = null
         var fetchConfigCallCount = 0
             private set
@@ -547,6 +684,7 @@ class SmartFoodEntryViewModelRemoteTest {
 
         override suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<FoodLookupConfigDto> {
             fetchConfigCallCount++
+            configGate?.await()
             return configResult
         }
 

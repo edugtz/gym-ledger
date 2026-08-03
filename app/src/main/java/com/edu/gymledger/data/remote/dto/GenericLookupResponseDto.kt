@@ -4,8 +4,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class GenericLookupResponseDto(
-    val ok: Boolean = false,
-    val data: GenericLookupDataDto = GenericLookupDataDto()
+    val ok: Boolean,
+    val data: GenericLookupDataDto
 )
 
 @Serializable

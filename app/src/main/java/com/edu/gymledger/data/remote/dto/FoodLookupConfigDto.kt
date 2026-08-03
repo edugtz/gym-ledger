@@ -4,8 +4,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class FoodLookupConfigResponseDto(
-    val ok: Boolean = false,
-    val data: FoodLookupConfigDto = FoodLookupConfigDto()
+    val ok: Boolean,
+    val data: FoodLookupConfigDto
 )
 
 @Serializable
