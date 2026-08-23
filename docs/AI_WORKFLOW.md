@@ -1,4 +1,4 @@
-# GymLedger — Combined AI Workflow
+# GymLedger — AI Workflow (August 2026)
 
 ## Purpose
 
@@ -10,11 +10,42 @@ The key strategy is:
 Local-first for cost.
 Cloud-assisted for product quality.
 Gemini for Android-specific risk.
-Codex for final/rescue risk.
-ChatGPT as tech lead, product reviewer, prompt architect, and phase planner.
+GPT-5.6 Sol Codex for final/rescue risk.
+ChatGPT (GPT-5.6 Sol ChatGPT + GitHub) as tech lead, product reviewer, prompt architect, and phase planner.
 ```
 
 Cloud AI is a development tool only. GymLedger runtime is local-first and offline-capable. Optional online-assisted runtime services are allowed only when the active phase explicitly approves them, they are low-cost/free-tier friendly, and the app remains useful without internet. GymLedger must not depend on paid runtime APIs, auth/login/accounts, required cloud sync, Hilt, Retrofit, or multi-module architecture in v1.
+
+Routing is organized around **task risk** (§6), with one authoritative model matrix (§4). `opencode.json` determines which OpenCode agents/commands actually exist; this document states the routing policy. Keep both aligned.
+
+---
+
+## Quick Reference (August 2026)
+
+1. **Which model should I try first for normal implementation?**
+   Qwen3.8 27B 4bit + DFlash2 — `/local-build` (default agent).
+2. **Which model for higher local quality?**
+   Qwen3.8 27B 5bit + DFlash2 — `/local-quality`.
+3. **Which independent local fallback should I use?**
+   Qwen3.8 27B AWQ 5bpw + Lightning MTP — `/local-review` (agent `local-review-alt`, subagent, edit denied).
+4. **What is the cheap cloud executor?**
+   MiMo V2.5 — `/cloud-mimo` (already-defined bounded patches only).
+5. **What is the normal premium cloud escalation?**
+   GPT-5.6 Luna Medium (external/manual route) for quality; DeepSeek V4 Flash Max — `/cloud-ds-max` — for technical work.
+6. **What should handle backend correctness/security?**
+   Hy3 — `/cloud-hy3`.
+7. **What should handle Android platform/tooling?**
+   Gemini Android Studio (external).
+8. **When should GPT-5.6 Sol Codex be used?**
+   Frontier escalation only: difficult repo-wide work, risky migrations/refactors, hard failures after lower tiers, release-critical coding, final high-risk engineering review (external).
+9. **What is ChatGPT's role?**
+   Architect, tech lead, phase planner, prompt author, independent GitHub code reviewer, product/UX reviewer, final acceptance authority. Not the repository build validator.
+10. **Who commits?**
+    The user. Agents cannot push; commits require permission.
+11. **Who performs final GitHub review?**
+    ChatGPT (GPT-5.6 Sol ChatGPT + GitHub) on the pushed branch: PASS / PASS_WITH_NOTES / BLOCKED.
+12. **When must the agent stop instead of looping?**
+    After the first real error; after two failed attempts on the same blocker; after 8 tool calls with no progress. No autonomous repair loops.
 
 ---
 
@@ -146,21 +177,341 @@ Cloudflare Worker TypeScript
 
 ---
 
-## 3. Tier Framework
+## 3. Workflow Roles
 
-| Tier | Meaning | Default tool | When to use |
-|---|---|---|---|
-| Tier 0 | Docs, triage, planning, prompt prep | ChatGPT, Gemma, local fast model, Go Flash | Handoff, first-error analysis, commit message, plan writing |
-| Tier 1 | Local implementation | Devstral, GLM, Qwen Coder | DAOs, repositories, validators, tests, mappers, simple UI, small fixes |
-| Tier 2 | Premium implementation | OpenCode Go | Product-critical UI/UX, complex Compose screens, local model loops, dashboard, workout/nutrition UX |
-| Tier 3 | Android platform | Gemini Android Studio | Gradle/KSP/Room tooling, Compose Preview, Logcat, permissions, CameraX, SAF, Health Connect, notifications |
-| Tier 4 | Premium rescue/final | Codex CLI/App | Repo broken, risky migrations, hard refactors, final review, release gates |
+These roles are separate concepts. A single model session may fill at most one of them at a time.
 
-### Rule
+### BUILDER
 
 ```text
-Do not escalate because of anxiety.
+- edits the repository
+- runs tests/build
+- reports evidence: files changed, validation output, remaining risks
+```
+
+### REVIEWER
+
+```text
+- must be independent from the builder when practical
+- reviews diff/scope/correctness
+- does not blindly trust builder self-review
+```
+
+In OpenCode this is implemented structurally: `/local-review` runs agent `local-review-alt` (Qwen3.8 27B AWQ 5bpw + Lightning MTP) as a subagent with edit permission denied, so the reviewer cannot modify what it reviews.
+
+### TECH LEAD / FINAL REVIEW
+
+```text
+- ChatGPT (GPT-5.6 Sol ChatGPT + GitHub)
+- validates the pushed branch/commit on GitHub
+- decides PASS / PASS_WITH_NOTES / BLOCKED
+- is NOT the repository build validator: build/test evidence must come from the repository
+```
+
+### USER
+
+```text
+- approves builder preflight
+- performs manual product QA where required
+- owns commits and pushes (agent git push is denied; commits require permission)
+- decides merge after PASS
+```
+
+---
+
+## 4. Model Routing Matrix — August 2026 (authoritative)
+
+This is the single authoritative model matrix. All other sections refer to these roles. Do not maintain a second copy of this matrix elsewhere.
+
+### Local (LM Studio / MLX)
+
+| Role | Model | Use |
+|---|---|---|
+| Default Local Builder | Qwen3.8 27B 4bit + DFlash2 | Bounded implementation: repositories, ViewModels, tests, validators, Android business logic, straightforward Compose changes, bug fixes, well-defined patches. Highest practical speed/quality balance in current GymLedger benchmarks; strong agentic completion; reliable full-project implementation. |
+| Quality Local Builder | Qwen3.8 27B 5bit + DFlash2 | More complex implementation; higher-risk changes; tasks where additional quality is worth extra resources/time; second attempt when 4bit output is insufficient but the problem is still suitable for local execution. |
+| Local Fallback / Independent Second Trajectory | Qwen3.8 27B AWQ 5bpw + Lightning MTP (model ID `omlx/Qwen3.8-27B-AWQ-5.0bpw`; Lightning MTP is the intended runtime serving configuration for this role, not part of the model ID) | Independent local reviewer / second opinion; consistency check; challenger when the DFlash2 trajectory appears stuck or questionable; alternative implementation path. Retained, proven configuration — not obsolete. Slower than DFlash2 in many runs but has produced very strong final results. |
+
+### Cloud / Premium
+
+| Role | Model | Use |
+|---|---|---|
+| Default Premium Cloud | GPT-5.6 Luna Medium | Fast high-quality cloud escalation; complex implementation where local is not enough; high-value review. Currently an external/manual route (not configured as an OpenCode agent). |
+| Default Technical Cloud | DeepSeek V4 Flash Max | Coding/debugging; technical implementation; strong general engineering tasks. |
+| Cheap Fast Cloud Executor | MiMo V2.5 | Already-defined bounded patches; low-cost implementation when the architecture/solution is already known. NOT the first choice for ambiguous architecture or high-risk work. |
+| Backend Correctness Specialist | Hy3 | Database logic; concurrency; persistence; security; data integrity; correctness-sensitive backend work. |
+| Ultra-Fast Non-Sensitive Executor | Muse Spark 1.2 Contributor | Inexpensive experiments / harmless utility work only. Constraint: because of terms/data considerations, do NOT route secrets, sensitive data, private credentials, or sensitive repository context to it. |
+| Free Temporary Fallback | Ox Alpha | Experimentation / non-critical secondary trajectory. Availability may be temporary. |
+| Probation / Experimental | MiniMax M3 | May be used for bounded experiments. Output requires mandatory independent review before acceptance. |
+
+### Frontier / Escalation
+
+| Role | Model | Use |
+|---|---|---|
+| Frontier Implementation Escalation | GPT-5.6 Sol Codex | Difficult repo-wide work; risky migrations/refactors; hard failures after lower tiers; release-critical coding; final high-risk engineering review. External/manual route (not an OpenCode command). |
+| Architect / Tech Lead / Final Acceptance | GPT-5.6 Sol ChatGPT + GitHub | Phase planner; prompt author; independent GitHub code reviewer; product/UX reviewer; final acceptance authority in the workflow. External/manual route. Not the repository build validator. |
+
+### Android Specialist
+
+| Role | Model | Use |
+|---|---|---|
+| Android Platform Specialist | Gemini Android Studio | Gradle/AGP/Kotlin; KSP/Room compiler; Compose runtime issues; Logcat; permissions; CameraX; SAF/URI handling; Health Connect; notifications; emulator/device-specific debugging. External to OpenCode. Do not make Gemini the default general builder. |
+
+### OpenCode agents (current, verified against opencode.json)
+
+| Agent | Model | Notes |
+|---|---|---|
+| `local-build` (default) | Qwen3.8 27B 4bit + DFlash2 | Default local builder |
+| `local-quality` | Qwen3.8 27B 5bit + DFlash2 | Higher-risk / quality local builder |
+| `local-review-alt` | Qwen3.8 27B AWQ 5bpw | Independent local reviewer / second opinion; subagent; edit denied |
+| `cloud-ds-max` | DeepSeek V4 Flash Max | Fast technical cloud builder |
+| `cloud-muse` | Muse Spark 1.2 Contributor | Non-sensitive work only |
+| `cloud-mimo` | MiMo V2.5 | Cheap fast bounded executor |
+| `cloud-hy3` | Hy3 | Backend / DB / concurrency / persistence / correctness specialist |
+| `cloud-ox-free` | Ox Alpha Free | Temporary/free fallback |
+| `cloud-m3-probation` | MiniMax M3 | Probationary builder; mandatory independent QA/review policy |
+
+Operationally relevant config facts: agent `git push` is denied; `git commit` requires permission; edit requires permission globally; dangerous shell commands (e.g. `rm`, `sudo`) are denied or restricted. The workflow rule that matters: **the USER owns commits and pushes.**
+
+---
+
+## 5. OpenCode Command Map (current)
+
+| Command | Current agent | Role |
+|---|---|---|
+| `/local-build` | `local-build` | Default local implementation |
+| `/local-quality` | `local-quality` | Higher-quality / higher-risk local implementation |
+| `/local-review` | `local-review-alt` | Independent local review |
+| `/cloud-ds-max` | `cloud-ds-max` | Technical cloud implementation/debugging |
+| `/cloud-mimo` | `cloud-mimo` | Cheap bounded cloud execution |
+| `/cloud-hy3` | `cloud-hy3` | Backend/data/correctness work |
+| `/cloud-muse` | `cloud-muse` | Ultra-fast non-sensitive execution |
+| `/cloud-ox` | `cloud-ox-free` | Temporary free fallback |
+| `/cloud-m3` | `cloud-m3-probation` | Experimental/probation builder |
+
+AI_WORKFLOW.md documents routing policy; `opencode.json` determines which OpenCode agents/commands actually exist. Keep both aligned.
+
+Routes that are NOT OpenCode commands (external/manual): ChatGPT (GPT-5.6 Sol ChatGPT + GitHub), GPT-5.6 Luna Medium, GPT-5.6 Sol Codex, Gemini Android Studio. Use the prompt templates in §12 with these routes.
+
+---
+
+## 6. Task Risk Routing
+
+Route by task risk, not by provider habit. Do not require every task to pass through every tier. Escalate on evidence, not anxiety.
+
+| Category | Task | First choice | Escalation |
+|---|---|---|---|
+| A | Planning / architecture | ChatGPT (GPT-5.6 Sol ChatGPT) | — (planning is a tech-lead role) |
+| B | Small bounded implementation | `/local-build` | `/local-quality` → `/cloud-ds-max` |
+| C | Medium/complex implementation | `/local-quality` | `/cloud-ds-max` → Luna Medium (external) |
+| D | Product-critical UI/UX | ChatGPT plan + `/local-quality` build; ChatGPT screenshot review | Luna Medium (external) if local output is CRUD-quality → Sol Codex (external) if still risky |
+| E | Backend / DB / concurrency / security | `/cloud-hy3` for correctness; `/local-build` for bounded patches | ChatGPT architecture; Sol Codex (external) for high-risk |
+| F | Android platform/tooling | Gemini Android Studio (external) | Sol Codex (external) if repo/tooling remains broken |
+| G | Debugging | First-error extraction (cheap: `/cloud-mimo` or local) → `/cloud-ds-max` diagnosis | Gemini if Android platform; Sol Codex (external) for hard failures |
+| H | Independent review | `/local-review` (AWQ 5bpw + Lightning MTP, edit denied) | `/cloud-ds-max` or Luna Medium (external); final: ChatGPT GitHub |
+| I | Release / risky migration / large refactor | GPT-5.6 Sol Codex (external) + ChatGPT final review | — |
+| J | Docs / handoff / prompt prep | ChatGPT; `/cloud-mimo` or local for simple docs | Muse Spark only for harmless utility work with no sensitive context |
+
+### 6.1 A — Planning / architecture
+
+```text
+1. ChatGPT (GPT-5.6 Sol ChatGPT) — phase planning, architecture, risks, builder prompts
+2. If ChatGPT planning is unavailable, /local-build may perform bounded repository
+   discovery and preflight, but should not make authoritative architecture or phase-scope
+   decisions. Defer those decisions until the tech-lead/planning route is available.
+```
+
+Use for: `CURRENT_PHASE.md`, `IMPLEMENTATION_PLAN.md`, architecture decisions, builder prompts.
+
+If ChatGPT is the planner, ChatGPT must provide the final `CURRENT_PHASE.md` / `IMPLEMENTATION_PLAN.md` directly. Do not ask the user to run a planning prompt back through ChatGPT when ChatGPT is already doing the planning.
+
+### 6.2 B — Small bounded implementation
+
+```text
+1. /local-build (Qwen3.8 4bit + DFlash2)
+2. /local-quality if the patch is riskier than it looks
+3. /cloud-ds-max if local fails twice
+```
+
+Use for: DAOs, repositories, validators, mappers, tests, small UI, small fixes, bug fixes, well-defined patches.
+
+### 6.3 C — Medium/complex implementation
+
+```text
+1. /local-quality (Qwen3.8 5bit + DFlash2)
+2. /cloud-ds-max (DeepSeek V4 Flash Max)
+3. Luna Medium (external) for complex implementation where local is not enough
+```
+
+### 6.4 D — Product-critical UI/UX
+
+```text
+1. ChatGPT screenshot/product review
+2. ChatGPT UX plan
+3. /local-quality build
+4. Luna Medium (external) if local output is CRUD-quality
+5. Gemini if a Compose/runtime issue appears
+6. Sol Codex (external) for final visual/risky review
+```
+
+Use for:
+
+```text
+Exercises premium UX
+Workout quick logging
+Workout detail/set logging
+Nutrition day
+Meal detail/items
+Dashboard
+Polish phases
+v1.5 UX phases
+```
+
+Do not accept CRUD-quality UI for these.
+
+### 6.5 E — Backend / DB / concurrency / security
+
+```text
+1. ChatGPT for architecture, DTO contract, cost/rate-limit policy
+2. /local-build for bounded Worker/TypeScript patches
+3. /cloud-hy3 (Hy3) for database logic, concurrency, persistence, security, data integrity
+4. /cloud-ds-max for general TypeScript implementation
+5. Sol Codex (external) for high-risk backend work
+```
+
+Use for:
+
+```text
+Cloudflare Worker foundation
+D1/KV cache
+USDA provider normalization
+Open Food Facts provider normalization
+Worker endpoint contracts
+budget guards / safe mode
+Room migrations
+import/export transactional safety
+Android remote lookup integration planning
+```
+
+Hard rules:
+
+```text
+Do not store personal user data in Worker unless a later phase explicitly approves it.
+Do not add accounts/auth system.
+Do not add paid providers.
+Do not make Android depend on network for core use.
+Do not put provider calls directly in Android.
+```
+
+### 6.6 F — Android platform/tooling
+
+```text
+1. Gemini Android Studio (external)
+2. /cloud-ds-max for non-platform code fixes
+3. Sol Codex (external) if repo/tooling remains broken
+```
+
+Use for:
+
+```text
+Gradle
+KSP
+Room compiler
+Compose compiler
+Android Studio sync
+Logcat
+permissions
+CameraX
+SAF
+Health Connect
+notifications
+URI/file issues
+```
+
+### 6.7 G — Debugging
+
+```text
+1. First-error extraction (cheap: /cloud-mimo or local triage)
+2. /cloud-ds-max (DeepSeek V4 Flash Max) diagnosis
+3. Gemini if Android tooling/platform
+4. Sol Codex (external) if still broken or risky
+```
+
+### 6.8 H — Independent review
+
+```text
+1. /local-review (local-review-alt: AWQ 5bpw + Lightning MTP; subagent; edit denied)
+2. /cloud-ds-max or Luna Medium (external) for high-value cloud review
+3. ChatGPT GitHub for final review of the pushed branch
+```
+
+The model that built the feature should not be the only reviewer.
+
+Examples:
+
+```text
+Build with /local-build -> review with /local-review or /cloud-ds-max
+Build with /local-quality -> review with /local-review (independent trajectory) or cloud
+Build with Gemini -> review with ChatGPT / Sol Codex if risky
+MiniMax M3 output -> mandatory independent review before acceptance
+```
+
+### 6.9 I — Release / risky migration / large refactor
+
+```text
+1. ChatGPT product checklist / threat model
+2. GPT-5.6 Sol Codex (external) implementation/rescue
+3. Gemini for runtime/platform
+4. ChatGPT GitHub final review
+```
+
+### 6.10 J — Docs / handoff / prompt prep
+
+```text
+1. ChatGPT
+2. /cloud-mimo or local for simple docs
+3. /cloud-muse only for harmless utility work (no secrets, no sensitive repo context)
+4. Sol Codex (external) only for final/release docs review
+```
+
+Use for:
+
+```text
+TASKS.md
+CURRENT_PHASE.md
+IMPLEMENTATION_PLAN.md
+AI_WORKFLOW.md
+AGENTS.md
+handoff
+acceptance criteria
+commit summaries
+```
+
+### Default flow (normal implementation)
+
+```text
+ChatGPT plan
+→ /local-build (Qwen3.8 4bit + DFlash2)
+→ local validation
+→ manual/runtime QA where relevant
+→ user commit/push
+→ ChatGPT GitHub independent review
+→ merge only after PASS
+```
+
+### Escalation ladder
+
+```text
+Qwen3.8 4bit + DFlash2
+→ Qwen3.8 5bit + DFlash2 (need more quality)
+  OR Qwen3.8 AWQ 5bpw + Lightning MTP (need an independent trajectory)
+→ GPT-5.6 Luna Medium / DeepSeek V4 Flash Max
+→ specialist model where applicable (Hy3 / Gemini)
+→ GPT-5.6 Sol Codex for frontier escalation
+```
+
 Escalate because of evidence:
+
+```text
 - local model loops
 - local output is CRUD-quality and the phase is product-critical
 - build fails after two local attempts
@@ -169,11 +520,13 @@ Escalate because of evidence:
 - final release/major phase needs high-confidence review
 ```
 
+Do not escalate because of anxiety.
+
 ---
 
-## 4. Tool Roles
+## 7. Tool Roles
 
-## 4.1 ChatGPT
+### 7.1 ChatGPT (GPT-5.6 Sol ChatGPT + GitHub)
 
 Use ChatGPT as:
 
@@ -185,76 +538,37 @@ screenshot reviewer
 phase planner
 prompt architect
 architecture sanity checker
+independent GitHub code reviewer
+final acceptance authority
 ```
 
 Use ChatGPT for:
 
 ```text
 replanning phases
-deciding local vs cloud vs Gemini vs Codex
+deciding local vs cloud vs Gemini vs Sol Codex
 reviewing screenshots
 evaluating whether UI feels premium or CRUD
 writing CURRENT_PHASE.md
 writing implementation prompts
 analyzing diffs pasted in chat
 final product sanity checks
+final GitHub review of the pushed branch (PASS / PASS_WITH_NOTES / BLOCKED)
 ```
 
 Do not treat ChatGPT as the build validator. Build/test still happens in the repo.
 
----
+### 7.2 Local AI (LM Studio / MLX)
 
-## 4.2 Local AI via LM Studio
+Use local AI for cheap, bounded, repeatable implementation. The current local stack is the three Qwen3.8 27B configurations in §4 (Default Local Builder, Quality Local Builder, Local Fallback / Independent Second Trajectory).
 
-Use local AI for cheap, bounded, repeatable implementation.
-
-### Current local model roles
-
-| Role | Preferred model | Use |
-|---|---|---|
-| Planning local | `qwen3.6-35b-a3b` | phase decomposition, architecture, risks, builder prompts |
-| Fast planning | `qwen3.6-35b-a3b-ud-mlx` | lighter planning if stable |
-| Default local builder | `devstral-small-2-24b-instruct-2512@6bit` | repos, ViewModels, validators, tests, small UI |
-| Light local builder / utility | `devstral-small-2-24b-instruct-2512@4bit` | quality gates, simple patches, low RAM |
-| Focused patch coding | `qwen3-coder-30b-a3b-instruct-mlx@5bit` | exact patch plans, small-to-medium fixes |
-| Light patch coding | `qwen3-coder-30b-a3b-instruct-mlx@4bit` | if RAM constrained |
-| Small local challenger | `glm-4.7-flash-mlx` | isolated fixes, fast experiments |
-| Review heavy | `qwen3.6-27b-mlx` | review only, not UI builder |
-| Review balanced | `qwen3.6-27b-6bit` or `qwen3.6-27b-mxfp4` | diff review, architecture concerns |
-| Review alternative | `nvidia-nemotron-3-nano-30b-a3b-mlx` | second opinion, scope/diff review |
-| Docs/handoff | `gemma-4-31b-it-mlx` | markdown, handoff, README, wording |
-| Fast triage | `lfm2-24b-a2b-mlx` or small local model | logs, summaries, prompt prep |
-| Autocomplete | `qwen2.5-coder-1.5b-instruct-mlx` | Continue autocomplete |
-
-### Models to avoid as autonomous builders
+Constraints:
 
 ```text
-deepseek-r1-distill-qwen-32b
-qwen3-coder-30b-a3b-instruct-mlx@6bit
-qwen3.6-27b-mlx 8bit for broad UI implementation
+- Do not use probation/experimental models (MiniMax M3) as the sole builder without independent review.
+- Do not route secrets, sensitive data, private credentials, or sensitive repository context to Muse Spark.
+- Do not let local agents run long autonomous loops.
 ```
-
-Use DeepSeek 32B only for conceptual reasoning/debug explanation outside tool-heavy build loops.
-
----
-
-## 4.3 OpenCode Local
-
-Use OpenCode local for:
-
-```text
-bounded implementation
-repositories
-DAOs
-validators
-tests
-mappers
-small UI
-quality gates
-focused fixes
-```
-
-Do not let OpenCode local run long autonomous loops.
 
 ```text
 1 phase = 1 session
@@ -262,29 +576,15 @@ Do not let OpenCode local run long autonomous loops.
 2 failed attempts = stop and escalate
 ```
 
----
+### 7.3 Cloud models
 
-## 4.4 OpenCode Go
-
-Use OpenCode Go for product-quality implementation and cloud/backend rescue.
-
-### Recommended Go model roles
-
-| Role | Model | Use |
-|---|---|---|
-| Cheap triage | `opencode-go/deepseek-v4-flash` | logs, first root error, cheap analysis |
-| Debug/review strong | `opencode-go/deepseek-v4-pro` | hard debugging, pre-commit review, scope review |
-| Balanced builder | `opencode-go/qwen3.6-plus` | moderate cloud implementation, high-quality coding |
-| Premium builder | `opencode-go/kimi-k2.6` | premium UX, complex Compose, local-loop failures |
-| Premium planner | `opencode-go/glm-5.1` | phase planning, UI/product specs, implementation plans |
-| Experimental fallback | `opencode-go/minimax-m2.7` if configured | experiment only |
-
-### OpenCode Go cost rule
-
-Use cheap Go models for logs and review. Use Kimi/GLM only where the quality gain matters.
+Use cloud models per the §4 matrix. Cost rule:
 
 ```text
-Do not use Kimi K2.6 or GLM-5.1 for:
+Use cheap models (MiMo V2.5) for logs, first-error extraction, and commit messages.
+Use premium (Luna Medium) only where the quality gain matters.
+
+Do not use premium models for:
 - git status
 - git diff
 - assembleDebug
@@ -292,7 +592,7 @@ Do not use Kimi K2.6 or GLM-5.1 for:
 - commit messages
 ```
 
-Use Kimi/GLM for:
+Use premium/technical cloud models for:
 
 ```text
 - product-critical UX
@@ -300,14 +600,12 @@ Use Kimi/GLM for:
 - local models producing CRUD-like UI
 - hard implementation after local failures
 - high-value planning
-- TypeScript Worker implementation/review when backend phase is active
+- TypeScript Worker implementation/review when a backend phase is active
 ```
 
----
+### 7.4 Gemini Android Studio
 
-## 4.5 Gemini Android Studio
-
-Gemini Android Studio is the Android platform specialist.
+Gemini Android Studio is the Android platform specialist (external to OpenCode).
 
 Use it for:
 
@@ -330,14 +628,12 @@ app-specific storage
 
 Do not use Gemini as the default product builder. Use it when Android tooling/platform context matters.
 
----
+### 7.5 GPT-5.6 Sol Codex (frontier, external)
 
-## 4.6 Codex CLI/App
-
-Use Codex for:
+Use Sol Codex for:
 
 ```text
-premium rescue
+frontier implementation escalation
 final review
 repo broken state
 risky Room migrations
@@ -347,11 +643,9 @@ MVP/v1.5/v2 release hardening
 visual review with app screenshots/appshots
 ```
 
-Do not use Codex for first attempts on simple phases.
+Do not use Sol Codex for first attempts on simple phases.
 
----
-
-## 4.7 Continue
+### 7.6 Continue
 
 Use Continue for:
 
@@ -368,251 +662,7 @@ Continue is not the primary Android build-fix tool. OpenCode owns repo+terminal+
 
 ---
 
-## 5. OpenCode Command Map
-
-This assumes your `opencode.json` defines these commands/agents. If a command name changes, keep the routing policy and update the command name.
-
-### Utility and quality
-
-| Command | Intended model/agent | Use |
-|---|---|---|
-| `/gym-start` | local fast triage | inspect branch, status, phase summary |
-| `/gym-quality` | local fast triage / utility | run status, diff stat, ksp, lint, tests, assemble |
-| `/gym-assemble` | local utility | run `assembleDebug` |
-| `/gym-tests` | local utility | run unit tests |
-| `/gym-lint` | local utility | run lint |
-| `/gym-install` | local utility | install debug APK |
-| `/gym-first-error` | Go Flash | identify first root error from logs |
-| `/gym-handoff` | local fast triage | compact handoff |
-
-### Planning
-
-| Command | Intended model/agent | Use |
-|---|---|---|
-| `/gym-plan` | Qwen3.6 35B local | local implementation plan |
-| `/gym-plan-cloud` | GLM-5.1 Go | premium plan |
-| `/gym-ux-plan` | Qwen3.6 35B local | local UX plan |
-| `/gym-critic` | local reviewer | critique a plan before coding |
-
-### Build
-
-| Command | Intended model/agent | Use |
-|---|---|---|
-| `/gym-build-local` | Devstral 6bit | bounded local build |
-| `/gym-build-qwen` | Qwen Coder 5bit | focused patch |
-| `/gym-build-glm` | GLM 4.7 Flash local | small safe patch |
-| `/gym-build-cloud` | Kimi K2.6 or configured premium Go | premium build/rescue |
-| `/gym-phase7-ux` | Kimi K2.6 Go | Exercises premium UX |
-| `/gym-debug` | DeepSeek V4 Pro Go | debug/root cause and fix |
-
-### Review
-
-| Command | Intended model/agent | Use |
-|---|---|---|
-| `/gym-review` | local reviewer | diff review |
-| `/gym-review-qwen27` | Qwen27 heavy review | high-quality local review |
-| `/gym-scope` | local reviewer | scope creep check |
-| `/gym-commit-ready` | DeepSeek V4 Pro Go | final pre-commit review |
-| `/gym-commit-message` | local triage | commit message suggestion |
-
-### External prompt generation
-
-| Command | Use |
-|---|---|
-| `/gym-ui-review-prompt` | generate prompt for ChatGPT/Codex screenshot review |
-| `/gym-gemini-prompt` | generate Gemini Android Studio prompt |
-| `/gym-codex-prompt` | generate Codex rescue/review prompt |
-| `/gym-next-phase` | draft next `CURRENT_PHASE.md` |
-
----
-
-## 6. Priority Routing by Task Type
-
-## 6.1 Docs / roadmap / prompts
-
-Priority:
-
-```text
-1. ChatGPT
-2. Gemma 4 31B local
-3. Qwen3.6 35B local
-4. GLM-5.1 Go only if planning quality matters
-5. Codex only for final/release docs review
-```
-
-Use for:
-
-```text
-TASKS.md
-CURRENT_PHASE.md
-IMPLEMENTATION_PLAN.md
-AI_WORKFLOW.md
-AGENTS.md
-handoff
-acceptance criteria
-commit summaries
-```
-
----
-
-## 6.2 Repositories / DAOs / validators / mappers / tests
-
-Priority:
-
-```text
-1. Devstral 6bit local
-2. Qwen Coder 30B 5bit local
-3. GLM 4.7 Flash local for small patches
-4. DeepSeek V4 Pro Go if debugging is hard
-5. Codex only for risky refactors or broken repo
-```
-
-Typical commands:
-
-```text
-/gym-plan-fast or /gym-plan
-/gym-build-local
-/gym-build-qwen
-/gym-quality
-/gym-review
-```
-
----
-
-## 6.3 Product-critical UI / UX
-
-Priority:
-
-```text
-1. ChatGPT screenshot/product review
-2. Qwen3.6 35B local UX plan or GLM-5.1 Go plan
-3. OpenCode Go Qwen3.6 Plus for balanced implementation
-4. Kimi K2.6 Go for premium implementation
-5. Gemini Android Studio if Compose/runtime issue appears
-6. Codex App/CLI for final visual/risky review
-```
-
-Use for:
-
-```text
-Exercises premium UX
-Workout quick logging
-Workout detail/set logging
-Nutrition day
-Meal detail/items
-Dashboard
-Polish phases
-v1.5 UX phases
-```
-
-Do not accept CRUD-quality UI for these.
-
----
-
-## 6.4 Android-specific debugging
-
-Priority:
-
-```text
-1. Go Flash first-error extraction
-2. DeepSeek V4 Pro Go diagnosis
-3. Gemini Android Studio
-4. Codex if repo/tooling remains broken
-```
-
-Use for:
-
-```text
-Gradle
-KSP
-Room compiler
-Compose compiler
-Android Studio sync
-Logcat
-permissions
-CameraX
-SAF
-Health Connect
-notifications
-URI/file issues
-```
-
----
-
-## 6.5 Risky migrations / import-export / data safety
-
-Priority:
-
-```text
-1. Qwen3.6 35B local planning
-2. Devstral/Qwen Coder local implementation
-3. DeepSeek V4 Pro Go review/debug
-4. Gemini if Android platform/file picker/storage issue
-5. Codex final/rescue if data loss risk exists
-```
-
-Use for:
-
-```text
-Room migrations
-JSON import/export
-CSV relational import
-backup restore
-replace_all behavior
-encrypted backup
-```
-
----
-
-## 6.6 Final hardening/release
-
-Priority:
-
-```text
-1. ChatGPT product checklist
-2. OpenCode Go DeepSeek V4 Pro review
-3. Gemini Android Studio for runtime/platform
-4. Codex CLI final review
-5. Codex App screenshot/appshot visual review
-```
-
-
-## 6.7 Online-assisted backend / Cloudflare Worker
-
-Priority:
-
-```text
-1. ChatGPT for architecture, DTO contract, cost/rate-limit policy
-2. Qwen Coder / Codex / OpenCode Go for TypeScript Worker implementation
-3. DeepSeek V4 Pro or Codex for security/rate-limit/error handling review
-4. Gemini only if Android integration/platform issues appear
-```
-
-Use for:
-
-```text
-Cloudflare Worker foundation
-D1/KV cache
-USDA provider normalization
-Open Food Facts provider normalization
-Worker endpoint contracts
-budget guards / safe mode
-Android remote lookup integration planning
-```
-
-Hard rules:
-
-```text
-Do not store personal user data in Worker unless a later phase explicitly approves it.
-Do not add accounts/auth system.
-Do not add paid providers.
-Do not make Android depend on network for core use.
-Do not put provider calls directly in Android.
-```
-
----
-
-## 7. Universal Phase Loop
+## 8. Universal Phase Loop
 
 Every phase follows this loop.
 
@@ -640,18 +690,16 @@ docs/CURRENT_PHASE.md
 
 with the next phase.
 
-### Step 2 — Decide tier
+### Step 2 — Decide task risk category
 
-Use the phase matrix below.
+Use the task risk routing (§6) and the phase matrix (§11) below.
 
 ### Step 3 — Mini planning
 
 Required for:
 
 ```text
-Tier 2
-Tier 3
-Tier 4
+categories C, D, E, I
 schema changes
 Room/repository relationships
 complex UI
@@ -719,16 +767,17 @@ Install if UI/runtime changed:
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### Step 7 — Review with a different model
+### Step 7 — Independent review
 
 The model that built the feature should not be the only reviewer.
 
 Examples:
 
 ```text
-Build with Kimi -> review with DeepSeek V4 Pro / ChatGPT screenshot / Codex if needed
-Build local -> review with Qwen27/Nemotron/DeepSeek V4 Pro
-Build Gemini -> review with ChatGPT/Codex if risky
+Build with /local-build -> review with /local-review or /cloud-ds-max
+Build with /local-quality -> review with /local-review (independent trajectory) or cloud
+Build with Gemini -> review with ChatGPT / Sol Codex if risky
+MiniMax M3 output -> mandatory independent review before acceptance
 ```
 
 ### Step 8 — Manual QA
@@ -745,7 +794,7 @@ Move to the next phase only after commit.
 
 ---
 
-## 8. Stop and Escalation Policy
+## 9. Stop and Escalation Policy
 
 ### If local model loops
 
@@ -753,7 +802,7 @@ Move to the next phase only after commit.
 Stop.
 Do not try a third speculative local attempt.
 Create handoff.
-Escalate to OpenCode Go or Gemini depending on issue.
+Escalate per task risk: /cloud-ds-max (technical), Gemini (Android platform), or Sol Codex (frontier) depending on issue.
 ```
 
 ### If build fails
@@ -769,18 +818,18 @@ Then extract the first real error.
 Escalation:
 
 ```text
-1. /gym-first-error
-2. /gym-debug
+1. first-error extraction (cheap: /cloud-mimo or local)
+2. /cloud-ds-max diagnosis
 3. Gemini Android Studio if Android tooling/platform
-4. Codex if still broken or risky
+4. Sol Codex (external) if still broken or risky
 ```
 
 ### If UI is functional but mediocre
 
 ```text
 1. screenshot to ChatGPT
-2. /gym-ux-plan or /gym-plan-cloud
-3. /gym-build-cloud with Qwen3.6 Plus or Kimi K2.6
+2. ChatGPT UX plan
+3. /local-quality or Luna Medium (external) build
 4. screenshot review again
 ```
 
@@ -789,15 +838,24 @@ Escalation:
 ```text
 1. local planning
 2. local build
-3. DeepSeek V4 Pro review
-4. Codex final if data loss/migration risk
+3. /cloud-hy3 (Hy3) review
+4. Sol Codex (external) final if data loss/migration risk
+```
+
+### General stop conditions
+
+```text
+- Stop after the first real error.
+- Maximum two attempts on the same blocker.
+- No autonomous repair loops.
+- If no progress after 8 tool calls, stop and summarize.
 ```
 
 ---
 
-## 9. Global Quality Gates
+## 10. Global Quality Gates
 
-## Scope Gate
+### Scope Gate
 
 ```text
 Only CURRENT_PHASE.md implemented.
@@ -807,7 +865,7 @@ No unnecessary dependencies.
 No backend/auth/cloud/Hilt/Retrofit/multi-module unless CURRENT_PHASE explicitly approves the backend/cloud exception.
 ```
 
-## Package and Path Gate
+### Package and Path Gate
 
 ```text
 The app package is com.edu.gymledger.
@@ -824,7 +882,7 @@ grep -R -nE "package com\.gymledger\b|import com\.gymledger\b" \
   app/src/main/java app/src/test/java || true
 ```
 
-## Runtime Cost Gate
+### Runtime Cost Gate
 
 ```text
 No paid runtime API.
@@ -834,7 +892,7 @@ Optional online-assisted services must have local/manual fallback and must be sa
 All premium AI usage is development-only.
 ```
 
-## Online-Assisted Gate
+### Online-Assisted Gate
 
 For phases that explicitly allow online-assisted features:
 
@@ -859,7 +917,7 @@ No backend code.
 No remote lookup implementation.
 ```
 
-## Build Gate
+### Build Gate
 
 Default:
 
@@ -873,7 +931,7 @@ Critical:
 ./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
 ```
 
-## UI/Product Gate
+### UI/Product Gate
 
 For UI phases:
 
@@ -886,7 +944,7 @@ Inputs do not feel like a generic CRUD form if the phase is product-critical.
 Manual QA passes.
 ```
 
-## Data Safety Gate
+### Data Safety Gate
 
 For Room/import/export/backup:
 
@@ -899,7 +957,7 @@ Failed imports do not corrupt existing data.
 Backups can restore enough data to be useful.
 ```
 
-## Photo Estimate Honesty Gate
+### Photo Estimate Honesty Gate
 
 ```text
 Estimates labeled approximate.
@@ -908,7 +966,7 @@ No claim of exact calorie estimation.
 No external AI/API in v1.
 ```
 
-## Commit Gate
+### Commit Gate
 
 Before commit:
 
@@ -929,95 +987,110 @@ review is PASS or PASS_WITH_NOTES
 
 ---
 
-## 10. Phase Matrix and Model Priority
+## 11. Phase Matrix and Route Priority
 
 Use this as the default route. If `docs/CURRENT_PHASE.md` explicitly says otherwise, follow it and document why.
 
-| Phase | Name | Tier | Priority route |
+Role keys:
+
+| Key | Meaning |
+|---|---|
+| local | `/local-build` — Qwen3.8 4bit + DFlash2 (default local builder) |
+| quality | `/local-quality` — Qwen3.8 5bit + DFlash2 (quality local builder) |
+| alt | `/local-review` — Qwen3.8 AWQ 5bpw + Lightning MTP (independent local review) |
+| ds | `/cloud-ds-max` — DeepSeek V4 Flash Max (technical cloud) |
+| mimo | `/cloud-mimo` — MiMo V2.5 (cheap bounded cloud) |
+| hy3 | `/cloud-hy3` — Hy3 (backend correctness) |
+| luna | GPT-5.6 Luna Medium (premium cloud, external) |
+| gemini | Gemini Android Studio (external) |
+| sol | GPT-5.6 Sol Codex (frontier, external) |
+| chatgpt | GPT-5.6 Sol ChatGPT + GitHub (tech lead / final review, external) |
+
+| Phase | Name | Risk | Priority route |
 |---:|---|---|---|
-| 0 | Project Bootstrap | 3 | Android Studio manual -> Gemini Android Studio -> Codex if sync/build remains broken |
-| 1 | Base Dependencies | 3 | Gemini Android Studio -> ChatGPT dependency sanity -> Codex if Gradle remains broken |
-| 2 | App Shell and Theme | 1 | Devstral 6bit -> GLM local patch -> Qwen Coder 5bit -> Go Qwen3.6 Plus if local fails |
-| 3 | Main Navigation | 1 | Devstral 6bit -> GLM local -> Qwen Coder 5bit -> Gemini only for runtime/navigation crash |
-| 4 | Room Foundation | 1/3 | Qwen35 plan -> Devstral/Qwen Coder build -> Go DeepSeek Pro debug -> Gemini for KSP/Room -> Codex if migration/data risk |
-| 5 | Room Smoke Tests | 1 | Devstral 6bit -> Qwen Coder 5bit -> Go DeepSeek Pro if tests fail weirdly |
-| 6 | Exercise Repository | 1 | Devstral 6bit -> Qwen Coder 5bit -> GLM local -> Go DeepSeek Pro review |
-| 7A | Exercises CRUD Foundation | 1/2 | Local build for data/wiring -> ChatGPT screenshot review -> Go Qwen3.6 Plus if UI poor |
-| 7B | Exercises Premium UX Pass | 2 | ChatGPT screenshot review -> GLM-5.1 Go plan -> Kimi K2.6 Go build -> DeepSeek Pro Go review -> Codex if still risky |
-| 8 | Workout Repository | 1 | Qwen35 plan -> discovery-only pass -> Devstral 6bit -> Qwen Coder 5bit -> DeepSeek Pro review -> Gemini only for KSP/Room/Gradle |
-| 9 | Workout List UI | 2 | ChatGPT UX plan -> Go Qwen3.6 Plus -> Kimi if mediocre -> DeepSeek Pro review |
-| 10 | Workout Detail and Sets UI | 2/4 | ChatGPT product plan -> GLM-5.1 Go plan -> Kimi/Qwen Go build -> Gemini if runtime -> Codex final if complex |
-| 11 | Routine Repository | 1 | Qwen35 plan -> Devstral 6bit -> Qwen Coder 5bit -> local/DeepSeek review |
-| 12 | Routines UI | 2 | ChatGPT UX review -> Go Qwen3.6 Plus -> Kimi if UX poor -> DeepSeek review |
-| 13 | Start Workout From Routine | 2 | Qwen35 plan -> Go Qwen3.6 Plus -> DeepSeek Pro review -> Codex if history integrity risk |
-| 14 | Body Repository | 1 | Devstral -> Qwen Coder -> local review |
-| 15 | Body Measurements UI | 2 | ChatGPT UX -> Go Qwen3.6 Plus -> local review |
-| 16 | Food Repository | 1 | Devstral -> Qwen Coder -> DeepSeek review if validation complex |
-| 17 | Foods UI | 2 | ChatGPT UX -> Go Qwen3.6 Plus -> Kimi if UX poor |
-| 17A | Product Platform Strategy Update | 0 | ChatGPT plan -> Gemma/Qwen docs rewrite -> local diff review |
-| 17B | Settings Foundation for Online Assistance | 1 | Devstral/Qwen Coder -> DataStore/Settings UI -> full Android gate |
-| 17C | Smart Food Entry Local Foundation | 1/2 | ChatGPT product plan -> local builder for calculator/tests -> Go Qwen/Kimi if UX feels CRUD |
-| 17D | Cloudflare Worker Foundation | 1/2 | ChatGPT architecture -> Qwen Coder/Codex TypeScript -> curl smoke tests |
-| 17E | Worker Food Providers and Cache | 1/4 | ChatGPT DTO policy -> Qwen Coder/Codex -> DeepSeek/Codex review for rate-limit/security |
-| 17F | Android Remote Food Lookup Integration | 2/3 | Go Qwen/Kimi for UX -> Gemini if Android networking/runtime -> DeepSeek review |
-| 17G | Manual Barcode Lookup | 2/3 | Go Qwen for UI -> Worker contract review -> Gemini only for runtime issues |
-| 17H | Food Recents and Favorites | 2 | ChatGPT product plan -> Go Qwen -> local tests/review |
-| 18 | Nutrition Repository | 1 | Qwen35 plan -> Devstral/Qwen Coder -> tests -> DeepSeek review |
-| 19 | Nutrition Day UI | 2 | ChatGPT product plan -> Go Qwen3.6 Plus -> Kimi for premium UX -> screenshot review |
-| 20 | Meal Detail and Items UI | 2/4 | ChatGPT UX -> GLM-5.1 Go plan -> Kimi Go build -> DeepSeek review -> Codex if complex |
-| 21 | Settings Repository | 1 | Devstral -> Qwen Coder -> local review |
-| 22 | Settings UI | 3 | Gemini if DataStore/theme/platform -> local/Go for simple UI -> ChatGPT review |
-| 23 | Real Dashboard Data | 2 | ChatGPT product plan -> Go Qwen3.6 Plus -> Kimi if dashboard feels weak -> DeepSeek review |
-| 24 | JSON Backup Models | 1 | Qwen35 plan -> Devstral/Qwen Coder -> unit tests |
-| 25 | JSON Export Logic | 1/4 | Devstral/Qwen Coder -> DeepSeek review -> Codex if backup integrity risk |
-| 26 | JSON Import Logic | 1/4 | Qwen35 plan -> Devstral/Qwen Coder -> DeepSeek review -> Codex for transactional/data safety |
-| 27 | CSV Parser | 1 | Devstral/Qwen Coder -> unit tests -> local review |
-| 28 | CSV Export | 1 | Devstral/Qwen Coder -> tests -> local review |
-| 29 | Simple CSV Import | 1 | Qwen35 plan -> Devstral/Qwen Coder -> tests -> DeepSeek review |
-| 30 | Relational CSV Import | 1/4 | Qwen35 plan -> Devstral/Qwen Coder -> DeepSeek review -> Codex for FK/data safety |
-| 31 | Import / Export UI | 3 | Gemini for SAF/document picker -> Go Qwen for UI -> manual QA |
-| 32 | Meal Photo Storage and UI | 3 | Gemini for Photo Picker/URI/storage -> Go Qwen/Kimi for UI -> manual QA |
-| 33 | Photo-Assisted Food Estimate Engine | 1 | Qwen35 plan -> Devstral/Qwen Coder -> tests -> ChatGPT honesty review |
-| 34 | Photo-Assisted Estimate UI | 3 | Gemini for URI/photo runtime -> Go Qwen/Kimi for UX -> ChatGPT screenshot review |
-| 35 | Empty States and Validation Polish | 2 | ChatGPT screenshots -> Go Qwen3.6 Plus -> Kimi if needed |
-| 36 | Final MVP QA and Hardening | 4 | ChatGPT checklist -> Gemini runtime -> DeepSeek review -> Codex final |
-| 37 | MVP Release Prep and Post-MVP Backlog | 0 | ChatGPT -> Gemma docs -> Codex optional review |
-| 38 | Workout Quick Log UX | 2 | ChatGPT product plan -> Go Qwen3.6 Plus -> Kimi if needed -> screenshot review |
-| 39 | Copy Previous Workout | 2 | Qwen35 plan -> Go Qwen3.6 Plus -> DeepSeek review |
-| 40 | Rest Timer and Workout Timer | 2/3 | Go Qwen/Kimi -> Gemini if lifecycle/runtime/timer issue -> review |
-| 41 | Exercise History | 2 | Qwen35 plan -> Go Qwen -> DeepSeek review |
-| 42 | Personal Records and Estimated 1RM | 1 | Qwen35 plan -> Devstral/Qwen Coder -> tests -> local review |
-| 43 | Workout Analytics Summary | 2 | Qwen35/ChatGPT plan -> Go Qwen -> screenshot/product review |
-| 44 | Routine Templates and Duplication | 1 | Qwen35 plan -> Devstral/Qwen Coder -> tests |
-| 45 | Last Performance Suggestions | 2 | ChatGPT product plan -> Go Qwen -> tests/review |
-| 46 | Nutrition Favorites and Meal Templates | 2 | ChatGPT product plan -> Go Qwen -> Kimi if UX poor |
-| 47 | Copy Meal From Previous Day | 2 | Qwen35 plan -> Go Qwen -> tests/review |
-| 48 | Nutrition Trends | 2 | ChatGPT product plan -> Go Qwen/Kimi -> screenshot review |
-| 49 | Body Progress Trends | 2 | ChatGPT product plan -> Go Qwen -> screenshot review |
-| 50 | Dashboard v1.5 Insights | 2/4 | ChatGPT product plan -> Kimi/Qwen Go -> DeepSeek review -> Codex if complex |
-| 51 | Search, Filters, and Sorting Polish | 2 | ChatGPT UX -> Go Qwen -> local review |
-| 52 | Accessibility and UX Polish | 2 | ChatGPT screenshots -> Go Qwen/Kimi -> manual QA |
-| 53 | v1.5 Final QA and Hardening | 4 | ChatGPT checklist -> Gemini runtime -> DeepSeek review -> Codex final |
-| 54 | Health Connect Optional Integration | 3 | ChatGPT scope -> Gemini first -> DeepSeek review -> Codex if permissions/data risk |
-| 55 | Barcode Scanner Foundation | 3 | Gemini first -> ChatGPT UX -> Go Qwen for UI polish |
-| 56 | User-Imported Food Database | 1 | Qwen35 plan -> Devstral/Qwen Coder -> DeepSeek review |
-| 57 | Advanced Food Search and Barcode Mapping | 2 | Qwen35 plan -> Go Qwen -> Kimi if UX/search poor |
-| 58 | Progress Photos | 3 | Gemini first -> Go Qwen/Kimi UI -> manual QA |
-| 59 | On-Device Meal Photo Analysis Research Spike | 0/3 | ChatGPT research framing -> Gemini if Android ML/image APIs -> docs only |
-| 60 | Optional BYO AI Estimate Adapter | 1 | Qwen35 plan -> Devstral/Qwen Coder -> security/privacy review |
-| 61 | Progressive Overload Suggestions | 1/2 | ChatGPT product rules -> Devstral/Qwen Coder -> tests -> Go if UX needed |
-| 62 | Program Builder and Periodization Templates | 2 | ChatGPT product plan -> Go Qwen/Kimi -> DeepSeek review |
-| 63 | Notifications and Reminders | 3 | Gemini first -> Go Qwen for UI -> manual QA |
-| 64 | App Lock and Encrypted Backup | 4 | ChatGPT threat model -> Gemini/Codex -> Codex final |
-| 65 | Advanced Charts and Reports | 2 | ChatGPT product plan -> Go Qwen/Kimi -> screenshot review |
-| 66 | Wear OS Companion Research | 0 | ChatGPT/Gemini research docs -> no implementation by default |
-| 67 | v2 Final QA, Migration, and Release Hardening | 4 | ChatGPT checklist -> Gemini runtime -> DeepSeek review -> Codex final |
+| 0 | Project Bootstrap | F | Android Studio manual -> gemini -> sol if sync/build remains broken |
+| 1 | Base Dependencies | F | gemini -> chatgpt dependency sanity -> sol if Gradle remains broken |
+| 2 | App Shell and Theme | B | local -> quality -> ds if local fails |
+| 3 | Main Navigation | B | local -> quality -> gemini only for runtime/navigation crash |
+| 4 | Room Foundation | B/E | chatgpt plan -> local/quality build -> ds debug -> gemini for KSP/Room -> sol if migration/data risk |
+| 5 | Room Smoke Tests | B | local -> quality -> ds if tests fail weirdly |
+| 6 | Exercise Repository | B | local -> quality -> ds review |
+| 7A | Exercises CRUD Foundation | B/D | local for data/wiring -> chatgpt screenshot review -> quality/luna if UI poor |
+| 7B | Exercises Premium UX Pass | D | chatgpt screenshot review -> chatgpt plan -> quality/luna build -> ds review -> sol if still risky |
+| 8 | Workout Repository | B | chatgpt plan -> discovery-only pass -> local -> quality -> ds review -> gemini only for KSP/Room/Gradle |
+| 9 | Workout List UI | D | chatgpt UX plan -> quality -> luna if mediocre -> ds review |
+| 10 | Workout Detail and Sets UI | D/I | chatgpt product plan -> quality/luna build -> gemini if runtime -> sol final if complex |
+| 11 | Routine Repository | B | chatgpt plan -> local -> quality -> alt/ds review |
+| 12 | Routines UI | D | chatgpt UX review -> quality -> luna if UX poor -> ds review |
+| 13 | Start Workout From Routine | D/E | chatgpt plan -> quality -> ds review -> sol if history integrity risk |
+| 14 | Body Repository | B | local -> quality -> alt review |
+| 15 | Body Measurements UI | D | chatgpt UX -> quality -> alt review |
+| 16 | Food Repository | B | local -> quality -> ds review if validation complex |
+| 17 | Foods UI | D | chatgpt UX -> quality -> luna if UX poor |
+| 17A | Product Platform Strategy Update | A/J | chatgpt plan -> local/mimo docs rewrite -> alt diff review |
+| 17B | Settings Foundation for Online Assistance | B | local/quality -> DataStore/Settings UI -> full Android gate |
+| 17C | Smart Food Entry Local Foundation | B/D | chatgpt product plan -> local for calculator/tests -> quality/luna if UX feels CRUD |
+| 17D | Cloudflare Worker Foundation | B/E | chatgpt architecture -> local/ds TypeScript -> curl smoke tests |
+| 17E | Worker Food Providers and Cache | E/I | chatgpt DTO policy -> ds/hy3 -> hy3/sol review for rate-limit/security |
+| 17F | Android Remote Food Lookup Integration | D/F | quality/luna for UX -> gemini if Android networking/runtime -> ds review |
+| 17G | Manual Barcode Lookup | D/F | local for UI -> hy3 worker contract review -> gemini only for runtime issues |
+| 17H | Food Recents and Favorites | D | chatgpt product plan -> local/quality -> local tests/review |
+| 18 | Nutrition Repository | B | chatgpt plan -> local/quality -> tests -> ds review |
+| 19 | Nutrition Day UI | D | chatgpt product plan -> quality -> luna for premium UX -> screenshot review |
+| 20 | Meal Detail and Items UI | D/I | chatgpt UX -> quality/luna build -> ds review -> sol if complex |
+| 21 | Settings Repository | B | local -> quality -> alt review |
+| 22 | Settings UI | F | gemini if DataStore/theme/platform -> local for simple UI -> chatgpt review |
+| 23 | Real Dashboard Data | D | chatgpt product plan -> quality -> luna if dashboard feels weak -> ds review |
+| 24 | JSON Backup Models | B | chatgpt plan -> local/quality -> unit tests |
+| 25 | JSON Export Logic | B/E | local/quality -> ds/hy3 review -> sol if backup integrity risk |
+| 26 | JSON Import Logic | B/E | chatgpt plan -> local/quality -> hy3 review -> sol for transactional/data safety |
+| 27 | CSV Parser | B | local/quality -> unit tests -> alt review |
+| 28 | CSV Export | B | local/quality -> tests -> alt review |
+| 29 | Simple CSV Import | B | chatgpt plan -> local/quality -> tests -> ds review |
+| 30 | Relational CSV Import | B/E | chatgpt plan -> local/quality -> hy3 review -> sol for FK/data safety |
+| 31 | Import / Export UI | F | gemini for SAF/document picker -> local for UI -> manual QA |
+| 32 | Meal Photo Storage and UI | F | gemini for Photo Picker/URI/storage -> local/quality for UI -> manual QA |
+| 33 | Photo-Assisted Food Estimate Engine | B | chatgpt plan -> local/quality -> tests -> chatgpt honesty review |
+| 34 | Photo-Assisted Estimate UI | F | gemini for URI/photo runtime -> local/quality for UX -> chatgpt screenshot review |
+| 35 | Empty States and Validation Polish | D | chatgpt screenshots -> quality -> luna if needed |
+| 36 | Final MVP QA and Hardening | I | chatgpt checklist -> gemini runtime -> ds review -> sol final |
+| 37 | MVP Release Prep and Post-MVP Backlog | A/J | chatgpt -> local/mimo docs -> sol optional review |
+| 38 | Workout Quick Log UX | D | chatgpt product plan -> quality -> luna if needed -> screenshot review |
+| 39 | Copy Previous Workout | D | chatgpt plan -> quality -> ds review |
+| 40 | Rest Timer and Workout Timer | D/F | local/quality -> gemini if lifecycle/runtime/timer issue -> review |
+| 41 | Exercise History | D | chatgpt plan -> quality -> ds review |
+| 42 | Personal Records and Estimated 1RM | B | chatgpt plan -> local/quality -> tests -> alt review |
+| 43 | Workout Analytics Summary | D | chatgpt plan -> quality -> screenshot/product review |
+| 44 | Routine Templates and Duplication | B | chatgpt plan -> local/quality -> tests |
+| 45 | Last Performance Suggestions | D | chatgpt product plan -> quality -> tests/review |
+| 46 | Nutrition Favorites and Meal Templates | D | chatgpt product plan -> quality -> luna if UX poor |
+| 47 | Copy Meal From Previous Day | D | chatgpt plan -> quality -> tests/review |
+| 48 | Nutrition Trends | D | chatgpt product plan -> quality/luna -> screenshot review |
+| 49 | Body Progress Trends | D | chatgpt product plan -> quality -> screenshot review |
+| 50 | Dashboard v1.5 Insights | D/I | chatgpt product plan -> quality/luna -> ds review -> sol if complex |
+| 51 | Search, Filters, and Sorting Polish | D | chatgpt UX -> quality -> alt review |
+| 52 | Accessibility and UX Polish | D | chatgpt screenshots -> quality/luna -> manual QA |
+| 53 | v1.5 Final QA and Hardening | I | chatgpt checklist -> gemini runtime -> ds review -> sol final |
+| 54 | Health Connect Optional Integration | F | chatgpt scope -> gemini first -> ds review -> sol if permissions/data risk |
+| 55 | Barcode Scanner Foundation | F | gemini first -> chatgpt UX -> local for UI polish |
+| 56 | User-Imported Food Database | B | chatgpt plan -> local/quality -> ds review |
+| 57 | Advanced Food Search and Barcode Mapping | D | chatgpt plan -> quality -> luna if UX/search poor |
+| 58 | Progress Photos | F | gemini first -> local/quality UI -> manual QA |
+| 59 | On-Device Meal Photo Analysis Research Spike | A/F | chatgpt research framing -> gemini if Android ML/image APIs -> docs only |
+| 60 | Optional BYO AI Estimate Adapter | B/E | chatgpt plan -> local/quality -> hy3 security/privacy review |
+| 61 | Progressive Overload Suggestions | B/D | chatgpt product rules -> local/quality -> tests -> quality/luna if UX needed |
+| 62 | Program Builder and Periodization Templates | D | chatgpt product plan -> quality/luna -> ds review |
+| 63 | Notifications and Reminders | F | gemini first -> local for UI -> manual QA |
+| 64 | App Lock and Encrypted Backup | E/I | chatgpt threat model -> gemini/sol -> sol final |
+| 65 | Advanced Charts and Reports | D | chatgpt product plan -> quality/luna -> screenshot review |
+| 66 | Wear OS Companion Research | A | chatgpt/gemini research docs -> no implementation by default |
+| 67 | v2 Final QA, Migration, and Release Hardening | I | chatgpt checklist -> gemini runtime -> ds review -> sol final |
 
 ---
 
-## 11. Generic Prompts
+## 12. Generic Prompts
 
-Generic Builder Preflight Prompt — GymLedger
+### 12.1 Generic Builder Preflight Prompt — GymLedger
 
 Role:
 Builder preflight only. Do not edit files yet.
@@ -1157,8 +1230,9 @@ PASTE_VALIDATION_COMMAND_FROM_CURRENT_PHASE
 
 Stop here and wait for approval before editing.
 
+---
 
-## 11.1 Mini Planning Prompt
+### 12.2 Mini Planning Prompt
 
 ```text
 Read:
@@ -1187,10 +1261,8 @@ Include:
 
 Keep the plan small, committable, and limited to CURRENT_PHASE.md.
 
-
 For backend/cloud phases also include:
 
-```text
 12. Worker files to create/modify
 13. Endpoint contract
 14. Environment variables/secrets
@@ -1198,11 +1270,10 @@ For backend/cloud phases also include:
 16. curl/manual smoke tests
 17. Android integration contract if relevant
 ```
-```
 
 ---
 
-## 11.2 UX Planning Prompt
+### 12.3 UX Planning Prompt
 
 ```text
 Act as a senior Android product engineer and UX designer.
@@ -1243,7 +1314,7 @@ Return:
 
 ---
 
-## 11.3 Generic Builder Prompt
+### 12.4 Generic Builder Prompt
 
 ```text
 Implement only docs/CURRENT_PHASE.md.
@@ -1293,7 +1364,7 @@ After approval:
 
 ---
 
-## 11.3A Discovery-Only Prompt
+### 12.5 Discovery-Only Prompt
 
 Use this before repository/data/model phases or whenever a local model starts guessing paths.
 
@@ -1323,7 +1394,7 @@ Return:
 
 ---
 
-## 11.3B Repository / Room Builder Add-On
+### 12.6 Repository / Room Builder Add-On
 
 Append this to the generic builder prompt for Room, DAO, repository, entity, and model phases.
 
@@ -1355,8 +1426,9 @@ Validation:
 - Use ./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug for schema/repository phases.
 ```
 
+---
 
-## 11.3C Backend / Worker Builder Add-On
+### 12.7 Backend / Worker Builder Add-On
 
 Append this to the generic builder prompt for Cloudflare Worker phases.
 
@@ -1391,7 +1463,7 @@ Validation:
 
 ---
 
-## 11.4 Approval Prompt
+### 12.8 Approval Prompt
 
 ```text
 Approved.
@@ -1406,7 +1478,7 @@ Do not commit.
 
 ---
 
-## 11.5 Controlled Debug Prompt
+### 12.9 Controlled Debug Prompt
 
 ```text
 Controlled debug mode.
@@ -1436,7 +1508,7 @@ Rules:
 
 ---
 
-## 11.6 Code Review Prompt
+### 12.10 Code Review Prompt
 
 ```text
 Review the current phase diff only.
@@ -1474,7 +1546,7 @@ Return:
 
 ---
 
-## 11.7 Scope Review Prompt
+### 12.11 Scope Review Prompt
 
 ```text
 Review the current diff for scope creep only.
@@ -1504,7 +1576,7 @@ Return:
 
 ---
 
-## 11.8 Gemini Android Studio Prompt
+### 12.12 Gemini Android Studio Prompt
 
 ```text
 I'm working on GymLedger, a local-first/offline-capable Android app with optional online-assisted phases only when CURRENT_PHASE explicitly allows them.
@@ -1541,13 +1613,13 @@ Please:
 
 ---
 
-## 11.9 Codex Rescue Prompt
+### 12.13 Sol Codex Rescue Prompt
 
 ```text
 Read AGENTS.md and docs/CURRENT_PHASE.md first.
 
 Context:
-OpenCode local/Go failed or produced a risky diff.
+A local or cloud builder failed or produced a risky diff.
 
 Task:
 Review and repair only BLOCKER issues for the current phase.
@@ -1570,7 +1642,7 @@ Return:
 
 ---
 
-## 11.10 Codex Final Review Prompt
+### 12.14 Sol Codex Final Review Prompt
 
 ```text
 Perform a final pre-commit review for the current GymLedger phase.
@@ -1601,7 +1673,7 @@ PASS, PASS_WITH_NOTES, or BLOCKED.
 
 ---
 
-## 11.11 ChatGPT Screenshot Review Prompt
+### 12.15 ChatGPT Screenshot Review Prompt
 
 ```text
 Review these GymLedger screenshots visually.
@@ -1625,12 +1697,12 @@ Return:
 - BLOCKER UX issues
 - SHOULD_FIX polish
 - NICE_TO_HAVE
-- concrete implementation instructions for OpenCode
+- concrete implementation instructions for the builder
 ```
 
 ---
 
-## 11.12 Commit Ready Prompt
+### 12.16 Commit Ready Prompt
 
 ```text
 Perform a final pre-commit review.
@@ -1664,19 +1736,19 @@ Then list commit message suggestion.
 
 ---
 
-## 12. Phase-Specific Playbooks
+## 13. Phase-Specific Playbooks
 
-## 12.1 Phase 7B Exercises Premium UX
+### 13.1 Phase 7B Exercises Premium UX
 
 Route:
 
 ```text
-ChatGPT screenshot review
--> GLM-5.1 Go planning
--> Kimi K2.6 Go implementation
--> DeepSeek V4 Pro Go review
+chatgpt screenshot review
+-> chatgpt plan
+-> quality (or luna external) implementation
+-> ds review
 -> manual QA
--> optional Codex if blocked
+-> sol if blocked
 ```
 
 Acceptance checklist:
@@ -1701,20 +1773,20 @@ Do not continue polishing after this passes. Move to Workout Repository / next p
 
 ---
 
-## 12.2 Workout Repository
+### 13.2 Workout Repository
 
 Route:
 
 ```text
-Qwen35 local plan
+chatgpt plan
 -> discovery-only pass
--> Devstral 6bit local build
--> Qwen Coder 5bit focused patch if needed
+-> local build
+-> quality focused patch if needed
 -> tests
--> local review
--> DeepSeek Pro if tests/debug are weird
--> Gemini only for KSP/Room/Gradle/tooling problems
--> Codex only if repo is broken or migration/data-loss risk appears
+-> alt review
+-> ds if tests/debug are weird
+-> gemini only for KSP/Room/Gradle/tooling problems
+-> sol only if repo is broken or migration/data-loss risk appears
 ```
 
 Quality focus:
@@ -1783,16 +1855,15 @@ Run:
 
 ---
 
-## 12.3 Workout UI / Set Logging
+### 13.3 Workout UI / Set Logging
 
 Route:
 
 ```text
-ChatGPT product plan
--> GLM-5.1 Go planning if needed
--> Qwen3.6 Plus or Kimi Go build
--> Gemini if runtime/navigation/Compose issue
--> DeepSeek Pro review
+chatgpt product plan
+-> quality or luna build
+-> gemini if runtime/navigation/Compose issue
+-> ds review
 -> screenshot review
 ```
 
@@ -1809,15 +1880,15 @@ no CRUD-feeling form
 
 ---
 
-## 12.4 Nutrition UI
+### 13.4 Nutrition UI
 
 Route:
 
 ```text
-ChatGPT product plan
--> Go Qwen3.6 Plus
--> Kimi if UX poor
--> Gemini if keyboard/runtime/Compose issue
+chatgpt product plan
+-> quality
+-> luna if UX poor
+-> gemini if keyboard/runtime/Compose issue
 -> screenshot review
 ```
 
@@ -1833,16 +1904,16 @@ manual entry fast
 
 ---
 
-## 12.5 Import / Export
+### 13.5 Import / Export
 
 Route:
 
 ```text
-Qwen35 plan
+chatgpt plan
 -> local build
--> DeepSeek Pro review
--> Gemini for SAF/file picker
--> Codex for transactional/data-loss risk
+-> hy3 review
+-> gemini for SAF/file picker
+-> sol for transactional/data-loss risk
 ```
 
 Quality focus:
@@ -1856,14 +1927,14 @@ CSV spreadsheet-friendly
 
 ---
 
-## 12.6 Photo / Camera / Storage
+### 13.6 Photo / Camera / Storage
 
 Route:
 
 ```text
-ChatGPT scope
--> Gemini Android Studio first
--> Go Qwen/Kimi for UI
+chatgpt scope
+-> gemini Android Studio first
+-> local/quality for UI
 -> manual QA
 ```
 
@@ -1879,16 +1950,16 @@ manual edit before saving
 
 ---
 
-## 12.7 Final MVP / v1.5 / v2 QA
+### 13.7 Final MVP / v1.5 / v2 QA
 
 Route:
 
 ```text
-ChatGPT checklist
+chatgpt checklist
 -> local full validation
--> Gemini runtime Android checks
--> DeepSeek Pro review
--> Codex final review
+-> gemini runtime Android checks
+-> ds review
+-> sol final review
 ```
 
 Quality focus:
@@ -1902,22 +1973,23 @@ manual flows
 product quality
 ```
 
+---
 
-## 12.8 Online-Assisted / Backend Worker Phases
+### 13.8 Online-Assisted / Backend Worker Phases
 
 Use this playbook for Phase 17D, 17E, 17F, 17G, and future backend/cloud phases.
 
-### Route
+#### Route
 
 ```text
-ChatGPT architecture / contract review
--> Qwen Coder or Codex for TypeScript Worker implementation
--> DeepSeek V4 Pro / Codex review for security, rate limits, cost guards, error handling
+chatgpt architecture / contract review
+-> local or ds for TypeScript Worker implementation
+-> hy3 / sol review for security, rate limits, cost guards, error handling
 -> curl/manual smoke tests
 -> Android integration only after Worker contract is stable
 ```
 
-### Backend phase rules
+#### Backend phase rules
 
 ```text
 Do not modify Android code unless the active phase explicitly says Android integration.
@@ -1931,7 +2003,7 @@ Prefer workers.dev until a custom domain is justified.
 Keep target cost $0/month for two-person use.
 ```
 
-### Worker validation
+#### Worker validation
 
 Use phase-specific commands from `docs/CURRENT_PHASE.md`. Typical Worker gates:
 
@@ -1952,7 +2024,7 @@ curl "http://localhost:8787/v1/foods/search?q=yogurt"
 curl "http://localhost:8787/v1/foods/barcode/7501234567890"
 ```
 
-### Android online-assisted validation
+#### Android online-assisted validation
 
 Android integration phases must pass:
 
@@ -1975,7 +2047,7 @@ manual fallback
 editable review before save
 ```
 
-### Worker prompt rules
+#### Worker prompt rules
 
 Every Worker builder prompt must include:
 
@@ -1992,9 +2064,9 @@ Stop after the first real validation error.
 
 ---
 
-## 13. Git Workflow
+## 14. Git Workflow
 
-## Before starting a phase
+### Before starting a phase
 
 ```bash
 git status --short --untracked-files=all
@@ -2008,7 +2080,7 @@ git stash push -u -m "wip: before next phase"
 
 or commit the previous phase.
 
-## Before commit
+### Before commit
 
 ```bash
 ./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
@@ -2017,7 +2089,7 @@ git diff --stat
 git diff --cached --name-status
 ```
 
-## Stage exact files
+### Stage exact files
 
 Avoid:
 
@@ -2031,7 +2103,7 @@ Prefer:
 git add app/src/main/java/... app/src/test/java/...
 ```
 
-## Commit examples
+### Commit examples
 
 ```text
 feat: improve exercises library UX
@@ -2042,7 +2114,7 @@ docs: update GymLedger roadmap and AI workflow
 chore: stop tracking local planning docs
 ```
 
-## If local planning docs are ignored
+### If local planning docs are ignored
 
 Keep these local and do not stage them:
 
@@ -2062,76 +2134,73 @@ git check-ignore -v .codex/config.toml
 
 ---
 
-## 14. Daily Operating Flow
+## 15. Daily Operating Flow
 
-## Start
+### Start
 
 ```text
-/gym-start
-/gym-quality
+Inspect branch, status, phase summary (default agent /local-build)
+Run quality gate: status, diff stat, ksp, lint, tests, assemble
 ```
 
 If build fails:
 
 ```text
-/gym-first-error [paste log]
-/gym-debug [paste first root error + relevant context]
+Extract first root error (cheap: /cloud-mimo or local)
+/cloud-ds-max [paste first root error + relevant context]
 ```
 
-## Simple phase
+### Simple phase
 
 ```text
-/gym-plan
+chatgpt plan (external)
 # for repository/Room phases: run discovery-only before build
-/gym-build-local
-/gym-quality
-/gym-review
-/gym-scope
-/gym-commit-ready
+/local-build
+run quality gate
+/local-review (independent)
+scope check (independent reviewer)
+commit-ready review (independent reviewer or /cloud-ds-max)
 ```
 
-## Product UI phase
+### Product UI phase
 
 ```text
-ChatGPT screenshot/product review
-/gym-ux-plan or /gym-plan-cloud
-/gym-build-cloud
-/gym-quality
-/gym-review-cloud or /gym-commit-ready
+chatgpt screenshot/product review (external)
+chatgpt UX plan (external)
+/local-quality (or luna external)
+run quality gate
+/cloud-ds-max or luna review (external)
 manual QA
-screenshot review again
+screenshot review again (chatgpt)
 ```
 
-## Android platform phase
+### Android platform phase
 
 ```text
-/gym-first-error [log]
-/gym-gemini-prompt [issue/log]
-Gemini Android Studio
-/gym-quality
+Extract first error from log
+gemini prompt (external, §12.12)
+gemini Android Studio (external)
+run quality gate
 manual runtime QA
 ```
 
-## Rescue/final
+### Rescue/final
 
 ```text
-/gym-codex-prompt [context]
-codex
+sol codex prompt (external, §12.13)
+GPT-5.6 Sol Codex (external)
 ```
 
 ---
 
-## 15. Current Recommendation After Phase 17
+## 16. Current Roadmap Pointer
 
-After Phase 17 Foods UI is complete:
+After Phase 17F (complete) and the Foods search bugfix (complete):
 
 ```text
-1. Commit/confirm Phase 17.
-2. Apply the docs/platform strategy update.
-3. Move to Phase 17B Settings Foundation for Online Assistance.
-4. Then Phase 17C Smart Food Entry Local Foundation.
-5. Then backend phases 17D/17E.
-6. Only after Worker contract is stable, integrate Android remote lookup in Phase 17F.
+1. Next: Phase 17G Manual Barcode Lookup.
+2. Then Phase 17H Food Recents and Favorites.
+3. Then Phase 18 Nutrition Repository.
 ```
 
 Do not jump directly from Foods UI to Android networking.
@@ -2160,7 +2229,7 @@ A nutrition app that forces manual macro entry for every common food will feel C
 
 ---
 
-## 16. General Rule for Future Apps
+## 17. General Rule for Future Apps
 
 Use this structure for any future Android or web app:
 
@@ -2181,10 +2250,10 @@ opencode.json         = agents/commands/permissions
 Routing:
 
 ```text
-Simple implementation -> local
-Product-critical UI -> OpenCode Go
+Simple implementation -> local (default local builder)
+Product-critical UI -> quality local / premium cloud
 Platform/runtime -> Gemini/platform specialist
-Final rescue/review -> Codex
+Final rescue/review -> frontier (GPT-5.6 Sol Codex)
 Product/UX/phase decisions -> ChatGPT
 ```
 
@@ -2196,3 +2265,4 @@ One branch.
 One quality gate.
 One commit.
 No agent reviews only its own work.
+```
