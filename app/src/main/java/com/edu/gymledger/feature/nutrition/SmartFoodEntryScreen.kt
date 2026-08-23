@@ -100,6 +100,12 @@ fun SmartFoodEntrySheet(
         }
     }
 
+    LaunchedEffect(uiState.selectedReference?.id) {
+        if (uiState.selectedReference != null) {
+            selectedContentScrollState.scrollTo(0)
+        }
+    }
+
     ModalBottomSheet(
         onDismissRequest = {
             viewModel.cancelSearch()
