@@ -29,7 +29,7 @@ Routing is organized around **task risk** (§6), with one authoritative model ma
 3. **Which independent local fallback should I use?**
    Qwen3.8 27B AWQ 5bpw + Lightning MTP — `/local-review` (agent `local-review-alt`, subagent, edit denied).
 4. **What is the cheap cloud executor?**
-   MiMo V2.5 — `/cloud-mimo` (already-defined bounded patches only).
+   MiMo V2.5 — `/cloud-mimo` (repository discovery, builder preflight when the phase is already planned, bounded cheap execution/patches).
 5. **What is the normal premium cloud escalation?**
    GPT-5.6 Luna Medium (external/manual route) for quality; DeepSeek V4 Flash Max — `/cloud-ds-max` — for technical work.
 6. **What should handle backend correctness/security?**
@@ -237,7 +237,7 @@ This is the single authoritative model matrix. All other sections refer to these
 |---|---|---|
 | Default Premium Cloud | GPT-5.6 Luna Medium | Fast high-quality cloud escalation; complex implementation where local is not enough; high-value review. Currently an external/manual route (not configured as an OpenCode agent). |
 | Default Technical Cloud | DeepSeek V4 Flash Max | Coding/debugging; technical implementation; strong general engineering tasks. |
-| Cheap Fast Cloud Executor | MiMo V2.5 | Already-defined bounded patches; low-cost implementation when the architecture/solution is already known. NOT the first choice for ambiguous architecture or high-risk work. |
+| Cheap Fast Cloud Executor | MiMo V2.5 | Repository discovery; builder preflight when the phase is already planned; bounded cheap execution/patches; low-cost implementation when the architecture/solution is already known. NOT the first choice for ambiguous architecture or high-risk work. NOT the planner. |
 | Backend Correctness Specialist | Hy3 | Database logic; concurrency; persistence; security; data integrity; correctness-sensitive backend work. |
 | Ultra-Fast Non-Sensitive Executor | Muse Spark 1.2 Contributor | Inexpensive experiments / harmless utility work only. Constraint: because of terms/data considerations, do NOT route secrets, sensitive data, private credentials, or sensitive repository context to it. |
 | Free Temporary Fallback | Ox Alpha | Experimentation / non-critical secondary trajectory. Availability may be temporary. |
@@ -265,7 +265,7 @@ This is the single authoritative model matrix. All other sections refer to these
 | `local-review-alt` | Qwen3.8 27B AWQ 5bpw | Independent local reviewer / second opinion; subagent; edit denied |
 | `cloud-ds-max` | DeepSeek V4 Flash Max | Fast technical cloud builder |
 | `cloud-muse` | Muse Spark 1.2 Contributor | Non-sensitive work only |
-| `cloud-mimo` | MiMo V2.5 | Cheap fast bounded executor |
+| `cloud-mimo` | MiMo V2.5 | Repository discovery; builder preflight when phase is already planned; bounded cheap execution/patches |
 | `cloud-hy3` | Hy3 | Backend / DB / concurrency / persistence / correctness specialist |
 | `cloud-ox-free` | Ox Alpha Free | Temporary/free fallback |
 | `cloud-m3-probation` | MiniMax M3 | Probationary builder; mandatory independent QA/review policy |
@@ -282,7 +282,7 @@ Operationally relevant config facts: agent `git push` is denied; `git commit` re
 | `/local-quality` | `local-quality` | Higher-quality / higher-risk local implementation |
 | `/local-review` | `local-review-alt` | Independent local review |
 | `/cloud-ds-max` | `cloud-ds-max` | Technical cloud implementation/debugging |
-| `/cloud-mimo` | `cloud-mimo` | Cheap bounded cloud execution |
+| `/cloud-mimo` | `cloud-mimo` | Repository discovery, preflight when phase is planned, bounded cloud execution |
 | `/cloud-hy3` | `cloud-hy3` | Backend/data/correctness work |
 | `/cloud-muse` | `cloud-muse` | Ultra-fast non-sensitive execution |
 | `/cloud-ox` | `cloud-ox-free` | Temporary free fallback |
@@ -310,6 +310,7 @@ Route by task risk, not by provider habit. Do not require every task to pass thr
 | H | Independent review | `/local-review` (AWQ 5bpw + Lightning MTP, edit denied) | `/cloud-ds-max` or Luna Medium (external); final: ChatGPT GitHub |
 | I | Release / risky migration / large refactor | GPT-5.6 Sol Codex (external) + ChatGPT final review | — |
 | J | Docs / handoff / prompt prep | ChatGPT; `/cloud-mimo` or local for simple docs | Muse Spark only for harmless utility work with no sensitive context |
+| K | Preflight / discovery (phase already planned) | `/cloud-mimo` (repository discovery + preflight only, STOP for approval) | `/local-build` for same-agent local preflight + implementation |
 
 ### 6.1 A — Planning / architecture
 
@@ -468,7 +469,7 @@ MiniMax M3 output -> mandatory independent review before acceptance
 
 ```text
 1. ChatGPT
-2. /cloud-mimo or local for simple docs
+2. /cloud-mimo for simple docs, repository discovery, or builder preflight when the phase is already planned
 3. /cloud-muse only for harmless utility work (no secrets, no sensitive repo context)
 4. Sol Codex (external) only for final/release docs review
 ```
@@ -521,6 +522,41 @@ Escalate because of evidence:
 ```
 
 Do not escalate because of anxiety.
+
+### Split preflight / premium builder
+
+When CURRENT_PHASE.md and IMPLEMENTATION_PLAN.md already define the scope, use this flow:
+
+```text
+ChatGPT planning
+→ CURRENT_PHASE.md + IMPLEMENTATION_PLAN.md
+→ /cloud-mimo discovery + preflight only
+→ STOP for approval
+→ selected premium/quality builder
+→ implementation
+→ validation
+→ independent review
+→ manual QA
+→ user commit/push
+→ ChatGPT GitHub final review
+```
+
+Rule: after an approved MiMo preflight, the premium builder must NOT repeat broad discovery. It may perform only narrow verification of assumptions needed for correctness.
+
+### Same-agent local flow (valid alternative)
+
+`/local-build` may perform its own preflight before implementation in a single session when the phase is already scoped and the agent can handle discovery + build:
+
+```text
+ChatGPT planning
+→ CURRENT_PHASE.md + IMPLEMENTATION_PLAN.md
+→ /local-build (preflight + implementation)
+→ validation
+→ independent review
+→ manual QA
+→ user commit/push
+→ ChatGPT GitHub final review
+```
 
 ---
 
@@ -581,7 +617,7 @@ Constraints:
 Use cloud models per the §4 matrix. Cost rule:
 
 ```text
-Use cheap models (MiMo V2.5) for logs, first-error extraction, and commit messages.
+Use cheap models (MiMo V2.5) for repository discovery, builder preflight when the phase is already planned, logs, first-error extraction, and commit messages.
 Use premium (Luna Medium) only where the quality gain matters.
 
 Do not use premium models for:
@@ -999,7 +1035,7 @@ Role keys:
 | quality | `/local-quality` — Qwen3.8 5bit + DFlash2 (quality local builder) |
 | alt | `/local-review` — Qwen3.8 AWQ 5bpw + Lightning MTP (independent local review) |
 | ds | `/cloud-ds-max` — DeepSeek V4 Flash Max (technical cloud) |
-| mimo | `/cloud-mimo` — MiMo V2.5 (cheap bounded cloud) |
+| mimo | `/cloud-mimo` — MiMo V2.5 (repository discovery, preflight when phase is planned, bounded cheap cloud) |
 | hy3 | `/cloud-hy3` — Hy3 (backend correctness) |
 | luna | GPT-5.6 Luna Medium (premium cloud, external) |
 | gemini | Gemini Android Studio (external) |
@@ -2155,6 +2191,8 @@ Extract first root error (cheap: /cloud-mimo or local)
 ```text
 chatgpt plan (external)
 # for repository/Room phases: run discovery-only before build
+# separate preflight preferred: /cloud-mimo (discovery + preflight, then STOP for approval → premium/quality builder)
+# same-agent local flow valid: /local-build can do its own preflight before implementation
 /local-build
 run quality gate
 /local-review (independent)
