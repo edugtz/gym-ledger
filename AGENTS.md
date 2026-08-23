@@ -115,10 +115,12 @@ After two failed local attempts, stop and escalate according to `docs/AI_WORKFLO
 
 ## Escalation Rules
 
-- Product-critical UI/UX feels CRUD or local models loop: use OpenCode Go.
-- Gradle/KSP/Room/Compose compiler/Logcat/Android platform issues: use Gemini Android Studio.
-- Cloudflare Worker/provider/rate-limit/security edge cases: use Codex or DeepSeek Pro review.
-- Repo broken, risky migration, large refactor, release final review: use Codex.
+Default model selection and escalation live in `docs/AI_WORKFLOW.md`.
+
+- Product/UX or implementation failure: escalate according to the AI_WORKFLOW risk routing.
+- Android platform/tooling issues: Gemini Android Studio.
+- Backend/database/concurrency/security: use the backend/correctness route in AI_WORKFLOW.
+- Frontier/risky migration/release issues: use the frontier escalation route in AI_WORKFLOW.
 
 ## Sensitive Data Rule
 
