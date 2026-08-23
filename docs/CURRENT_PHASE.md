@@ -1,907 +1,555 @@
-# Phase 17E.4 — Worker Deploy and Production Smoke Tests
+## Phase 17F — Android Remote Food Lookup Integration
 
-## Objective
+### Phase Type
 
-Deploy the GymLedger Food Lookup Worker safely to Cloudflare Workers and verify its real production behavior.
+Android platform and application integration (online-assisted). Not a backend phase.
 
-This phase closes Phase 17E.
+### Objective
 
-It builds on:
+Connect Android to the deployed GymLedger Food Lookup Worker for **generic food search only**, while preserving offline/manual behavior. Remote results are optional, approximate, editable suggestions that become local `Food` rows only after explicit user confirmation.
 
-- Phase 17E.1 — D1 Cache and Budget Foundation
-- Phase 17E.2 — USDA Generic Food Lookup Provider
-- Phase 17E.3 — Open Food Facts Barcode Lookup Provider
+### User-Visible Outcome
 
-The phase must:
+- When online assistance is enabled and configured, a user can search the Worker for generic foods from the existing Smart Food Entry sheet.
+- Results show source and approximate badges.
+- Selecting a result prefills the existing editable quantity + nutrition fields.
+- Saving creates a normal local `Food`; nothing is saved automatically.
+- With online assistance off, unconfigured, offline, disabled by Worker config, or on error, the existing manual and local reference flows work unchanged.
 
-- audit the deployment configuration
-- confirm production authentication behavior
-- configure required Cloudflare secrets
-- verify the production D1 binding
-- apply pending D1 migrations remotely
-- deploy to `workers.dev`
-- run production health and configuration smoke tests
-- run real USDA generic-food lookup
-- run real Open Food Facts barcode lookup
-- verify cache behavior
-- verify runtime kill switches
-- verify daily-budget behavior safely
-- verify authentication behavior
-- document the deployed endpoint for Phase 17F
-- preserve safe defaults when testing is complete
+### In Scope
 
-This phase does not modify Android.
+- App-owned DTOs for Worker `/v1/config` and `/v1/foods/generic?q=`.
+- JSON decoding with existing `kotlinx-serialization-json` (strict: `ignoreUnknownKeys=true`, `isLenient=false`).
+- HTTP client abstraction + OkHttp implementation behind a `okhttp3.Call.Factory` seam.
+- Cancellation-aware OkHttp bridge (`Call.enqueue` + `suspendCancellableCoroutine`).
+- Explicit `X-GymLedger-Key` header handling; key never in URL/logs/DTOs.
+- Timeout (~5s connect/read/write) and transport-error mapping to user-safe outcomes.
+- Custom endpoint validation (absolute HTTPS, no userinfo/query/fragment, normalized trailing slash).
+- Blank endpoint → default production Worker URL; blank key → remote not configured.
+- `RemoteFoodLookupRepository` orchestration using `SettingsRepository` endpoint/key.
+- Lazy `/v1/config` fetch (only when entering Online search) with 5-minute in-memory cache via an injectable monotonic time source and conservative fallback.
+- Generic-search flow integrated into the existing `SmartFoodEntrySheet` as an optional "Online search" mode.
+- Manual search submission (IME Search / button); no per-keystroke network calls; duplicate-concurrent prevention.
+- User confirmation before local save (existing `FoodRepository.create` path).
+- Nullable nutrition contract: DTO nutrients nullable; filter incomplete/negative/non-finite results; round valid calories to Int; map to `FoodReference` without changing its schema.
+- Source and approximate attribution display (reuse existing chips).
+- Graceful offline / disabled / missing-key / unconfigured / invalid-endpoint / error states shown inline.
+- Unit tests with fake `Call.Factory` / `FoodLookupClient` (no real network).
+- Manual runtime QA.
+- Settings helper-text consistency: resolving the contradiction between "Leave blank to use default" and the old "endpoint must be entered" helper.
 
-This phase does not add new provider features.
+### Explicitly Out of Scope
 
-This phase does not freeze the final Android integration contract. That belongs to Phase 17F / Backend B6.
+- Barcode lookup UI or scanning.
+- CameraX.
+- Recents and favorites.
+- Auto-saving provider results.
+- Caching provider results in Room (no Room lookup cache this phase).
+- Cloud accounts.
+- Cloud sync.
+- Backend / Worker code changes or deployment changes.
+- Worker migrations.
+- Analytics or telemetry.
+- Paid providers.
+- Broad Nutrition redesign.
+- Food schema changes.
+- New navigation routes.
+- `openFoodFactsEnabled` usage (reserved for Phase 17G).
 
-## Current Phase
+### Architecture Boundaries
 
-```text
-Phase 17E.4
-Backend Phase B5
-Worker Deploy and Production Smoke Tests
-```
+- Single `:app` module, package `com.edu.gymledger`. Never `com.gymledger`.
+- Manual DI via `AppContainer`. No Hilt. No Retrofit. No multi-module.
+- Android calls the GymLedger Worker only; never external providers directly.
+- Remote results are suggestions; Room/local `FoodRepository` remains source of truth.
+- New packages introduced only when needed: `data/remote`, `data/remote/dto`, `data/repository/lookup`, `domain/model/lookup` (per `docs/ARCHITECTURE.md`).
+- No Room schema change. No DB version bump. No new entity.
 
-## Product Principle
+### Security and Secret-Handling Rules
 
-```text
-Cloud helps discover data.
-Room owns saved data.
-```
+- The API key is user-entered in Settings and stored in DataStore on-device only.
+- Do not put the key in Kotlin source, XML resources, docs, tests, committed `gradle.properties`, BuildConfig snapshots, or logs.
+- The key is sent only as the `X-GymLedger-Key` request header, never as a query parameter or in the URL.
+- The key is sent only to the resolved and validated origin (default production Worker URL or a user-entered valid custom HTTPS endpoint).
+- Error/log messages and DTOs must not include the key.
+- Build behavior with no configured key: remote lookup is unavailable; manual/local flows unaffected.
+- The Worker base URL is public (documented in `docs/FOOD_LOOKUP_DEPLOYMENT.md`) and may be a default constant; it is not a secret.
 
-The deployed Worker remains a low-cost lookup, normalization, cache, and budget service.
+### Offline-First Behavior
 
-It must not store:
+- Existing local food creation, editing, search, and smart (reference) entry continue working with no internet.
+- Opening or using Nutrition/Foods must not require the Worker.
+- No config fetch at application startup. No config fetch while "Local reference" mode is active.
+- Network failure, timeout, missing key, invalid endpoint, 503 disabled states, or config-fetch failure leave manual/local entry usable and show an inline user-safe state.
+- A remote result becomes local only after explicit Save.
 
-- workouts
-- meals
-- body measurements
-- photos
-- user accounts
-- device identifiers
-- personal history
-- provider secrets in D1
-- API keys in source control
+### Endpoint Semantics
 
-## Recommended AI Route
+- `foodLookupEndpoint` blank → use the default production Worker URL constant (`https://gymledger-food-lookup.eduardo-gutierrez-2325.workers.dev`). A custom endpoint is not required when the default is used.
+- `foodLookupApiKey` blank → remote lookup is not configured (unavailable); no network call.
+- A non-blank custom endpoint must be validated: absolute HTTPS URL, no embedded username/password (userinfo), no query, no fragment, and a normalized trailing slash. An invalid custom endpoint makes remote lookup unavailable with an inline user-safe message.
+- The API key is sent only to the resolved validated origin.
 
-- Planning: ChatGPT
-- Preflight: Qwen Coder 30B A3B 5bit local
-- Preferred code-preparation builder: OpenCode Go + Qwen3.7 Plus
-- Cloudflare deployment guidance: Codex
-- Wrangler/D1 troubleshooting: DeepSeek V4 Pro
-- Focused documentation patches: Devstral Small 2 24B 6bit
-- Final repository review: ChatGPT through GitHub
-- Gemini: not needed because Android is out of scope
+### Complete Generic-Search Gating
 
-Deployment commands and secret entry must remain user-controlled.
+Local gates (must all hold before any network call):
 
-No model may invent, print, store, or commit real secrets.
+- `onlineFoodLookupEnabled = true`
+- `usdaEnabled = true`
+- `safeModeEnabled = false`
+- API key non-blank
+- endpoint blank (→ default URL) or valid custom HTTPS endpoint
 
-## Scope
+Remote config gates (from cached `/v1/config`, must all hold):
 
-Implement and execute only Backend Phase B5:
+- `onlineLookupAvailable = true`
+- `providers.usda = true`
+- `features.genericFoodSearch = true`
+- `safeMode = false`
+- query length ≥ `minQueryLength`
 
-```text
-Worker Deploy and Production Smoke Tests
-```
+`openFoodFactsEnabled` is explicitly unused in Phase 17F and remains for Phase 17G.
 
-Required production endpoints:
+### Nullable Nutrition Contract
 
-```text
-GET /v1/health
-GET /v1/config
-GET /v1/foods/generic?q=<query>
-GET /v1/foods/barcode/:barcode
-```
+The actual Worker contract allows `null` for `caloriesKcal`, `proteinG`, `carbohydrateG`, and `fatG`. `FoodReference` does not allow nullable nutrition and must not be modified.
 
-Expected deployment domain:
+Policy:
 
-```text
-https://gymledger-food-lookup.<cloudflare-subdomain>.workers.dev
-```
+- DTO nutrient fields remain nullable.
+- Do not coerce `null` to zero.
+- Filter any result that has a missing, negative, or non-finite nutrient (calories, protein, carbs, fat).
+- Convert valid calories to `Int` using an explicitly documented rounding rule (round to nearest, 0.5 rounds up, then require ≥ 0).
+- If all provider results are filtered out, return `Empty`.
+- Do not modify `FoodReference` or the Room schema.
 
-The exact URL must come from Wrangler deployment output.
+### Online Mode Visibility
 
-Do not guess the Cloudflare subdomain.
+- The "Online search" toggle is absent only when `onlineFoodLookupEnabled = false`.
+- When the user has enabled online assistance, "Online search" remains visible even if the Worker is temporarily disabled or a gate fails.
+- Missing key, USDA disabled, local safe mode, invalid endpoint, remote safe mode, remote provider disabled, or remote feature disabled must show an inline user-safe state inside the Online search area.
+- Do not silently remove the mode because the Worker is temporarily disabled.
+- Manual/local entry always remains usable.
 
-## Existing Deployment Configuration
+### Config-Fetch Timing
 
-Current Worker configuration includes:
+Exact flow:
 
-```text
-name = gymledger-food-lookup
-main = src/index.ts
-workers_dev = true
-D1 binding = DB
-database_name = gymledger-food-lookup
-```
+- No config fetch at application startup.
+- No config fetch while "Local reference" mode is active.
+- Fetch config when entering "Online search" for the first time.
+- Cache in memory for 5 minutes.
+- Re-fetch when stale.
+- Conservative unavailable state on failure (no config call per keystroke).
+- Use an injectable monotonic time source for TTL tests.
 
-The configured `database_id` must be verified against the intended Cloudflare account before deployment.
+### Search Trigger
 
-Do not replace it blindly.
+Phase 17F uses manual remote submission:
 
-## Required Pre-Deploy Audit
+- `onValueChange` only updates the query.
+- IME Search or a "Search online" button starts the request.
+- No Worker call per keystroke.
+- No debounce is required because submission is explicit.
+- Prevent duplicate concurrent submissions.
+- Cancellation/reset behavior: leaving Online search mode or dismissing the sheet cancels an in-flight search coroutine; a new submission while one is in flight is ignored (no concurrent duplicate).
 
-Before any remote write or deployment, inspect:
+### Files/Layers Allowed
 
-```text
-worker/food-lookup/wrangler.toml
-worker/food-lookup/package.json
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/auth.ts
-worker/food-lookup/src/config.ts
-worker/food-lookup/src/runtimeConfig.ts
-worker/food-lookup/src/errors.ts
-worker/food-lookup/migrations/
-worker/food-lookup/README.md
-```
+- `gradle/libs.versions.toml`, `app/build.gradle.kts` — add OkHttp dependency.
+- `app/src/main/AndroidManifest.xml` — add `INTERNET` permission.
+- `app/src/main/java/com/edu/gymledger/app/AppContainer.kt` — wire shared `OkHttpClient` + `RemoteFoodLookupRepository` + monotonic time source.
+- `app/src/main/java/com/edu/gymledger/data/remote/**` — client, DTOs, errors, parser, `Call.Factory` seam, cancellation bridge, endpoint validation.
+- `app/src/main/java/com/edu/gymledger/data/repository/lookup/RemoteFoodLookupRepository.kt`.
+- `app/src/main/java/com/edu/gymledger/domain/model/lookup/**` — remote result domain model + mapper (nullable-aware filtering + calorie rounding).
+- `app/src/main/java/com/edu/gymledger/feature/nutrition/SmartFoodEntry*.kt` — online mode integration.
+- `app/src/main/java/com/edu/gymledger/feature/settings/SettingsViewModel.kt` — endpoint validation helper exposure if needed.
+- `app/src/main/java/com/edu/gymledger/feature/settings/SettingsScreen.kt` — only if helper text must change to resolve the "Leave blank to use default" contradiction.
+- `app/src/test/java/com/edu/gymledger/**` — new unit tests.
+- `docs/CURRENT_PHASE.md`, `docs/IMPLEMENTATION_PLAN.md` — this replacement.
 
-Confirm:
+### Files/Layers Forbidden
 
-- Wrangler is authenticated to the intended Cloudflare account.
-- Worker name is correct.
-- D1 database exists in that account.
-- D1 database ID matches `wrangler.toml`.
-- No placeholder database ID remains.
-- No secret is stored in `wrangler.toml`.
-- `.dev.vars` remains ignored.
-- All unit tests pass.
-- Both provider implementations are present.
-- Runtime defaults remain conservative.
-- Existing endpoint contracts remain stable.
+- `worker/**`.
+- `app/src/main/java/com/edu/gymledger/data/db/entity/FoodEntity.kt`.
+- `app/src/main/java/com/edu/gymledger/data/db/dao/FoodDao.kt`.
+- `app/src/main/java/com/edu/gymledger/data/db/GymLedgerDatabase.kt`.
+- `app/src/main/java/com/edu/gymledger/data/repository/FoodRepository.kt`.
+- `app/src/main/java/com/edu/gymledger/data/repository/SettingsRepository.kt` (read-only consumer; no DataStore key changes).
+- `app/src/main/java/com/edu/gymledger/data/repository/OnlineAssistanceSettings.kt`.
+- `app/src/main/java/com/edu/gymledger/domain/model/FoodReference.kt` and `FoodReferenceCalculator.kt`.
+- `app/src/main/java/com/edu/gymledger/navigation/**`.
+- All features other than `feature/nutrition` and `feature/settings`.
+- Barcode/product lookup work.
+- `app/src/main/java/com/gymledger/**` (empty legacy dirs).
 
-## Authentication Contract
+### Cache Decision
 
-The Worker already contains an `X-GymLedger-Key` validation helper.
+- No Room lookup cache in Phase 17F.
+- Unconfirmed suggestions are ephemeral (in-memory only).
+- Worker D1 caches provider responses.
+- Confirmed results become normal local `Food` rows via `FoodRepository.create`.
+- The remote domain model remains compatible with a future local lookup cache.
+- No fake or hidden Room cache is implemented now.
 
-This phase must make the production authentication contract explicit and tested.
+### Acceptance Criteria
 
-### Public endpoints
+- Generic remote search works only when all local gates and all remote config gates hold, and query length ≥ server `minQueryLength`.
+- Blank endpoint uses the default Worker URL; a custom endpoint must pass validation or remote is unavailable; no custom endpoint is required to use the default.
+- Blank API key means remote is not configured; no network call occurs.
+- `usdaEnabled=true` is required locally; `providers.usda=true` is required remotely.
+- `openFoodFactsEnabled` is not used this phase.
+- Disabled/unconfigured/offline/invalid-endpoint/error states preserve manual and local reference entry.
+- The "Online search" toggle is visible whenever `onlineFoodLookupEnabled=true`; failures show inline user-safe states and do not silently remove the mode.
+- Selecting a remote result prefills editable fields; Save creates a normal local `Food`.
+- Source and approximate badges are shown for remote results.
+- Remote results with missing/negative/non-finite nutrients are filtered; if all are filtered, `Empty` is returned; `null` is never coerced to zero.
+- No product/barcode lookup UI introduced.
+- No Room schema change.
+- No backend/Worker changes.
+- Setting helper text is consistent with endpoint default semantics.
+- Validation passes.
+- Scope is clean; no unrelated files changed.
 
-```text
-GET /v1/health
-GET /v1/config
-```
+### Required Tests
 
-These remain publicly accessible and must not reveal secrets.
+Transport/client (`OkHttpFoodLookupClientTest` via fake `Call.Factory`):
+- Correct route + URL encoding for `/v1/foods/generic`.
+- `X-GymLedger-Key` header present; key not in URL; key not in DTOs or error strings.
+- Config route `/v1/config` has no key header.
+- Success decoding including `nutritionPer100g` with complete nutrients.
+- Empty results list → `Empty`.
+- Each HTTP/error mapping: 400 `invalid_query`, 401 `unauthorized`, 429 `budget_exceeded`, 503 `lookup_disabled`/`provider_disabled`/`feature_disabled`/`configuration_error`, body `provider_error`.
+- Malformed body → `MalformedResponse`.
+- Cancellation-aware bridge cancels the OkHttp `Call` when the coroutine is cancelled.
 
-### Protected endpoints
+Config:
+- Conservative fallback when config fetch fails or body malformed.
+- Enabled state (`onlineLookupAvailable && providers.usda && features.genericFoodSearch && !safeMode`) allows search.
+- `safeMode=true` suppresses search.
+- `features.genericFoodSearch=false` suppresses search.
+- `providers.usda=false` suppresses search.
+- `minQueryLength` advertises and gates query length.
+- In-memory cache reuses fresh config and re-fetches when stale (injectable monotonic time source).
 
-```text
-GET /v1/foods/generic
-GET /v1/foods/barcode/:barcode
-```
+Repository / product:
+- `onlineFoodLookupEnabled=false` → no remote call.
+- Missing API key → remote unavailable, no call.
+- `usdaEnabled=false` → remote unavailable, no call.
+- `safeModeEnabled=true` → remote unavailable, no call.
+- Invalid custom endpoint → remote unavailable, no call.
+- Too-short query → no remote call.
+- Endpoint blank → default URL used.
+- Endpoint non-blank invalid → unavailable.
+- Enabled valid query → loading/success/empty/error states.
+- Selecting a remote result prefills the editable fields.
+- Result remains editable; no automatic local save.
+- Manual flow remains available after remote failure.
+- Duplicate concurrent submission prevented.
 
-These require:
+Nullable nutrition:
+- Complete nutrients decode and map.
+- Incomplete (null) nutrient → result filtered.
+- Mixed complete/incomplete → only complete results returned.
+- Negative nutrient → filtered.
+- Non-finite nutrient → filtered.
+- All filtered → `Empty`.
+- Valid calories rounded to `Int` per documented rule.
 
-```http
-X-GymLedger-Key: <configured secret>
-```
+ViewModel:
+- Online setting disabled → toggle absent, no remote call.
+- Online setting enabled, missing key → toggle visible, inline "not configured" state, no call.
+- Online setting enabled, `usdaEnabled=false` → inline state, no call.
+- Online setting enabled, `safeModeEnabled=true` → inline state, no call.
+- Online setting enabled, invalid endpoint → inline state, no call.
+- Online setting enabled, valid, remote disabled → inline "temporarily disabled" state, manual usable.
+- Too-short query → no remote call.
+- Valid query → loading/success/empty/error states.
+- Selecting a remote result prefills editable fields.
+- Editable fields remain editable; no save until explicit call.
+- Manual flow available after remote failure.
+- Leaving Online search mode or dismissing sheet cancels in-flight search.
+- Key value never present in UI state or error strings.
 
-when `GYMLEDGER_API_KEY` is configured.
+Security:
+- No key in error strings, DTOs, or URL.
+- No real network access in unit tests.
 
-Production must configure `GYMLEDGER_API_KEY`.
+Settings (if modified):
+- Helper text consistent with "Leave blank to use default."
+- Custom endpoint validation enforces HTTPS, no userinfo/query/fragment, trailing slash.
 
-Required behavior:
-
-- missing header returns `unauthorized`
-- incorrect header returns `unauthorized`
-- correct header allows request processing
-- API key must not appear in responses
-- API key must not appear in logs
-- API key must not be placed in query parameters
-- health and config remain public
-- provider secrets remain server-side
-- unauthorized requests must not invoke provider services
-- unauthorized requests must not increment external-call counters
-
-If current route code does not invoke the existing authentication helper, wiring it into lookup routes is required before deployment.
-
-Do not introduce:
-
-- user accounts
-- OAuth
-- JWT
-- sessions
-- per-user API keys
-- refresh tokens
-
-## Required Secrets and Environment Values
-
-Configure in Cloudflare:
-
-```text
-GYMLEDGER_API_KEY
-USDA_API_KEY
-OPEN_FOOD_FACTS_USER_AGENT
-```
-
-Rules:
-
-- `GYMLEDGER_API_KEY` must be a generated high-entropy secret.
-- `USDA_API_KEY` must be the real USDA key.
-- `OPEN_FOOD_FACTS_USER_AGENT` must identify GymLedger and provide an approved contact address.
-- Do not commit any secret value.
-- Do not paste secret values into documentation.
-- Do not put secret values in `wrangler.toml`.
-- Do not store secret values in D1.
-- Do not echo secret values in shared terminal transcripts.
-- Use interactive Wrangler secret entry.
-
-Commands:
+### Validation Commands
 
 ```bash
-npx wrangler secret put GYMLEDGER_API_KEY
-npx wrangler secret put USDA_API_KEY
-npx wrangler secret put OPEN_FOOD_FACTS_USER_AGENT
+./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
 ```
 
-Do not pass secret values directly in shell command arguments.
-
-## Remote D1 Migration
-
-Phase 17E.1 created the required D1 migration.
-
-Before applying remotely:
+Targeted unit tests if supported:
 
 ```bash
-npx wrangler d1 migrations list gymledger-food-lookup --remote
+./gradlew testDebugUnitTest
 ```
 
-Review the output.
-
-Only apply migrations when:
-
-- the intended Cloudflare account is active
-- the database name is correct
-- the database ID is correct
-- the migration list is expected
-- no unexpected destructive migration appears
-
-Then:
+Secret gate (from repo root, no committed key value):
 
 ```bash
-npx wrangler d1 migrations apply gymledger-food-lookup --remote
+git grep -nE "X-GymLedger-Key:" -- app/src || true
+git grep -n "foodLookupApiKey" -- app/src/main app/src/test || true
 ```
 
-This is a remote operation and must be executed manually by the user.
+No real key value should appear. The DataStore key name `food_lookup_api_key` is expected; no literal secret value.
 
-Afterward verify that these tables exist:
-
-```text
-food_lookup_cache
-usage_daily
-runtime_config
-```
-
-Do not print secrets or unnecessary table contents.
-
-## Production Runtime Configuration
-
-Production must begin and end in a conservative state:
-
-```text
-safe_mode = true
-online_lookup_enabled = false
-usda_provider_enabled = false
-open_food_facts_provider_enabled = false
-generic_food_search_enabled = false
-barcode_lookup_enabled = false
-daily_external_call_budget = 25
-cache_enabled = true
-cache_ttl_seconds = 86400
-```
-
-For smoke testing only, temporarily enable:
-
-```text
-safe_mode = false
-online_lookup_enabled = true
-usda_provider_enabled = true
-open_food_facts_provider_enabled = true
-generic_food_search_enabled = true
-barcode_lookup_enabled = true
-daily_external_call_budget = 25
-cache_enabled = true
-cache_ttl_seconds = 86400
-```
-
-After smoke testing, restore:
-
-```text
-safe_mode = true
-online_lookup_enabled = false
-usda_provider_enabled = false
-open_food_facts_provider_enabled = false
-generic_food_search_enabled = false
-barcode_lookup_enabled = false
-daily_external_call_budget = 25
-cache_enabled = true
-cache_ttl_seconds = 86400
-```
-
-Do not leave providers enabled unintentionally.
-
-## Deployment Preparation
-
-Run from `worker/food-lookup`:
+Scope gate:
 
 ```bash
-npm ci
-npm run typecheck
-npm test
-npx wrangler deploy --dry-run
-```
-
-Only continue when all commands pass.
-
-Then deploy:
-
-```bash
-npx wrangler deploy
-```
-
-Record:
-
-- Worker name
-- deployment identifier or version
-- deployment UTC timestamp
-- deployed Git commit SHA
-- resulting `workers.dev` URL
-- Wrangler version
-
-Do not record secrets or Cloudflare tokens.
-
-## Production Smoke-Test Sequence
-
-Set the deployed URL locally:
-
-```bash
-export GYMLEDGER_WORKER_URL="https://actual-worker-url.workers.dev"
-```
-
-Set the API key in the current shell only:
-
-```bash
-export GYMLEDGER_API_KEY="<local-shell-only-value>"
-```
-
-Do not commit or print the value.
-
-### 1. Health endpoint
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/health"
-```
-
-Expected:
-
-- HTTP 200
-- stable success envelope
-- no secret fields
-
-### 2. Public configuration endpoint
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/config"
-```
-
-Expected:
-
-- HTTP 200
-- only safe public configuration
-- no D1 database ID
-- no API keys
-- no Open Food Facts contact value
-- no secret runtime values
-
-### 3. Generic lookup without authentication
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Expected:
-
-- HTTP 401
-- error code `unauthorized`
-- no provider call
-- no external-call increment
-
-### 4. Barcode lookup without authentication
-
-```bash
-curl -i "$GYMLEDGER_WORKER_URL/v1/foods/barcode/3017620422003"
-```
-
-Expected:
-
-- HTTP 401
-- error code `unauthorized`
-- no provider call
-- no external-call increment
-
-### 5. Incorrect authentication key
-
-Send a deliberately incorrect value.
-
-Expected:
-
-- HTTP 401
-- error code `unauthorized`
-- no provider call
-- no external-call increment
-
-### 6. Safe-mode behavior
-
-With conservative defaults active, call a valid lookup using the correct API key.
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Expected:
-
-- HTTP 503
-- error code `lookup_disabled`
-- provider is not called
-- `blocked_calls` increments
-- `external_calls` does not increment
-
-### 7. USDA production lookup
-
-Temporarily enable the required runtime flags.
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/generic?q=egg"
-```
-
-Expected:
-
-- HTTP 200
-- source `USDA`
-- attribution `USDA FoodData Central`
-- `isApproximate = true`
-- normalized nutrient values
-- no raw USDA fields
-- no USDA key
-
-### 8. USDA cache verification
-
-Repeat the identical USDA request.
-
-Expected:
-
-- same normalized result
-- cache hit increments
-- no new external provider call
-- cache-entry hit count increments
-
-### 9. Open Food Facts production lookup
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/barcode/3017620422003"
-```
-
-Expected:
-
-- HTTP 200
-- source `OPEN_FOOD_FACTS`
-- attribution includes Open Food Facts and ODbL
-- barcode remains a string
-- `product.externalId` matches the barcode
-- normalized product fields
-- no raw provider fields
-- no User-Agent value
-- no image fields
-
-### 10. Open Food Facts cache verification
-
-Repeat the identical barcode request.
-
-Expected:
-
-- cache hit
-- no additional provider call
-- stable DTO identity
-- cache-entry hit count increments
-
-### 11. Unknown valid barcode
-
-Use an intentionally unknown but structurally valid barcode.
-
-Expected:
-
-- HTTP 404
-- error code `not_found`
-- no raw provider response
-
-### 12. Invalid barcode
-
-```bash
-curl -i \
-  -H "X-GymLedger-Key: $GYMLEDGER_API_KEY" \
-  "$GYMLEDGER_WORKER_URL/v1/foods/barcode/1234"
-```
-
-Expected:
-
-- HTTP 400
-- error code `invalid_barcode`
-- no provider call
-- no external-call budget consumed
-
-### 13. Runtime switch verification
-
-Verify each switch separately:
-
-```text
-safe_mode = true
-    -> lookup_disabled
-
-online_lookup_enabled = false
-    -> lookup_disabled
-
-usda_provider_enabled = false
-    -> provider_disabled
-
-open_food_facts_provider_enabled = false
-    -> provider_disabled
-
-barcode_lookup_enabled = false
-    -> feature_disabled
-```
-
-Restore the value after each focused test.
-
-## Budget Verification
-
-Do not generate 25 real provider calls to exhaust the budget.
-
-Preferred approach:
-
-1. Read the current UTC date.
-2. Read the current `external_calls` value for that date.
-3. Temporarily set `daily_external_call_budget` to `current_external_calls + 1`.
-4. Perform one fresh uncached lookup.
-5. Perform another different uncached lookup.
-6. Confirm the second request returns `budget_exceeded`.
-7. Restore `daily_external_call_budget = 25`.
-
-Expected blocked request behavior:
-
-- HTTP 429
-- error code `budget_exceeded`
-- `blocked_calls` increments
-- provider is not called
-- `external_calls` does not increment for the blocked request
-
-Do not delete or reset production usage rows unless absolutely necessary and explicitly documented.
-
-## D1 Verification
-
-Inspect only operational metadata.
-
-Verify:
-
-- a USDA cache entry exists
-- an Open Food Facts cache entry exists
-- cache keys use the expected format
-- source and lookup type are correct
-- cache hit counts increase
-- usage counters change by expected deltas
-- runtime configuration is restored safely
-
-Expected cache-key patterns:
-
-```text
-usda:generic:<normalized-query>
-open_food_facts:barcode:<barcode>
-```
-
-Do not dump secrets or unnecessary full product payloads.
-
-## Safe-State Restoration
-
-Before phase completion, restore:
-
-```text
-safe_mode = true
-online_lookup_enabled = false
-usda_provider_enabled = false
-open_food_facts_provider_enabled = false
-generic_food_search_enabled = false
-barcode_lookup_enabled = false
-daily_external_call_budget = 25
-cache_enabled = true
-cache_ttl_seconds = 86400
-```
-
-Then make one authenticated lookup.
-
-Expected:
-
-```text
-lookup_disabled
-```
-
-The phase is not complete until this safe state is verified.
-
-## Documentation Required
-
-Update:
-
-```text
-docs/CURRENT_PHASE.md
-docs/IMPLEMENTATION_PLAN.md
-worker/food-lookup/README.md
-```
-
-Create:
-
-```text
-docs/FOOD_LOOKUP_DEPLOYMENT.md
-```
-
-The deployment document may contain:
-
-- Worker name
-- public `workers.dev` base URL
-- deployment date
-- deployed commit SHA
-- Wrangler version
-- endpoint list
-- authentication header name
-- safe runtime defaults
-- smoke-test results
-- known limitations
-- rollback instructions
-
-It must not contain:
-
-- `GYMLEDGER_API_KEY`
-- USDA API key
-- Cloudflare API token
-- Cloudflare account ID
-- personal Open Food Facts contact value
-- secret values
-- complete private D1 dumps
-
-## Rollback Plan
-
-Before deployment, identify the currently deployed Worker version, if any.
-
-Required immediate safety controls:
-
-```text
-safe_mode = true
-online_lookup_enabled = false
-usda_provider_enabled = false
-open_food_facts_provider_enabled = false
-generic_food_search_enabled = false
-barcode_lookup_enabled = false
-```
-
-Rollback options:
-
-- redeploy the previously approved Git commit
-- use Cloudflare deployment/version rollback when available
-- restore the previous Worker deployment
-- disable all external lookup switches
-
-A production provider failure does not justify bypassing safety controls.
-
-## Files Expected
-
-Likely file to create:
-
-```text
-docs/FOOD_LOOKUP_DEPLOYMENT.md
-```
-
-Likely files to modify:
-
-```text
-docs/CURRENT_PHASE.md
-docs/IMPLEMENTATION_PLAN.md
-worker/food-lookup/README.md
-worker/food-lookup/src/index.ts
-worker/food-lookup/src/index.test.ts
-```
-
-`index.ts` and its tests should change only if authentication is not currently wired into protected routes.
-
-Possible file to create:
-
-```text
-worker/food-lookup/src/auth.test.ts
-```
-
-Possible files to modify only when required by a verified blocker:
-
-```text
-worker/food-lookup/src/auth.ts
-worker/food-lookup/wrangler.toml
-```
-
-Do not modify providers, normalizers, cache, usage, or DTO contracts unless a real production defect is reproduced and reported.
-
-## Do Not Do
-
-- Do not modify Android.
-- Do not add Retrofit.
-- Do not add OkHttp.
-- Do not add Android settings.
-- Do not begin Phase 17F.
-- Do not freeze the final Android contract.
-- Do not add provider search.
-- Do not add images.
-- Do not add user accounts.
-- Do not add personal cloud storage.
-- Do not expose any key.
-- Do not commit `.dev.vars`.
-- Do not commit Cloudflare tokens.
-- Do not hardcode production secrets.
-- Do not put USDA credentials in `wrangler.toml`.
-- Do not store provider secrets in D1.
-- Do not leave providers enabled after smoke testing.
-- Do not intentionally trigger provider rate limits.
-- Do not create a custom domain.
-- Do not modify the D1 schema unless a real blocker is discovered.
-- Do not commit automatically. The user commits manually.
-
-## Acceptance Criteria
-
-- Pre-deploy audit passes.
-- Phase 17E.3 is merged into `dev`.
-- `npm ci` passes.
-- `npm run typecheck` passes.
-- `npm test` passes.
-- Wrangler dry run passes.
-- Cloudflare account is verified.
-- D1 database identity is verified.
-- Required secret names are configured.
-- Remote migration applies successfully.
-- Worker deployment succeeds.
-- Production URL is documented.
-- Health endpoint succeeds publicly.
-- Config endpoint succeeds publicly.
-- Lookup endpoints require `X-GymLedger-Key`.
-- Missing or incorrect key returns `unauthorized`.
-- Unauthorized requests do not invoke providers.
-- Conservative runtime defaults block lookups.
-- USDA lookup succeeds during the controlled smoke window.
-- USDA repeat lookup uses cache.
-- Open Food Facts lookup succeeds during the controlled smoke window.
-- Open Food Facts repeat lookup uses cache.
-- Invalid barcode does not consume provider budget.
-- Unknown valid barcode returns `not_found`.
-- Feature and provider switches work.
-- Budget blocking is verified without abusive traffic.
-- Runtime defaults are restored.
-- No secret appears in Git, responses, or shared logs.
-- Android remains untouched.
-- Deployment and rollback documentation is complete.
-
-## Validation Commands
-
-From repository root:
-
-```bash
-git status --short --untracked-files=all
 git diff --name-status
 git diff --stat
+git diff -- worker/ || true
+git diff -- app/src/main/java/com/edu/gymledger/data/db || true
+```
+
+`worker/` and DB diffs must be empty.
+
+### Manual QA
+
+- Online assistance setting OFF: remote toggle absent; manual + smart entry work.
+- Online assistance ON, no key: Online search visible with inline "not configured"; manual entry works.
+- Online assistance ON, key present, `usdaEnabled=false`: Online search visible with inline "temporarily unavailable"; manual entry works.
+- Online assistance ON, key present, `safeModeEnabled=true`: Online search visible with inline "temporarily unavailable"; manual entry works.
+- Online assistance ON, key present, invalid custom endpoint: Online search visible with inline "invalid endpoint"; manual entry works.
+- Online assistance ON, key present, endpoint blank (default URL), Worker in conservative/safe mode (current production): Online search visible; search reports "temporarily disabled"; manual entry works.
+- Worker temporarily enabled for controlled testing (optional, only if user explicitly approves): successful USDA generic result prefills fields; each result shows source + approximate.
+- Edit-before-save: change values then Save; verify local `Food` created with edited values.
+- Persistence only after Save: discarding a remote suggestion never creates a `Food`.
+- App restart: settings (endpoint/key/toggles) persist; no remote call at startup.
+- Manual food entry unaffected by remote flow.
+- Rotation/navigation preserve the Smart Entry sheet state where supported by existing behavior.
+- No barcode controls present.
+- Airplane mode: remote search fails gracefully; manual + local reference entry usable.
+
+### Stop Conditions
+
+Stop immediately when:
+- Phase 17E.4 is absent from the active branch history.
+- Repository is unexpectedly dirty.
+- Build/test/lint fails after the first real error (do not loop beyond two local attempts; escalate per `docs/AI_WORKFLOW.md`).
+- A real API key value is detected in source/tests/docs/logs.
+- Worker code is modified.
+- Room schema/DB version changes.
+- Barcode UI is introduced.
+- Remote results auto-save without confirmation.
+- Adding a dependency beyond OkHttp becomes necessary.
+- `FoodReference` or `FoodReferenceCalculator` is modified.
+- `isLenient=true` is enabled in JSON parsing.
+
+### Suggested Commit
+
+```text
+feat: add online food lookup
+```
+
+### Phase-Completion Definition
+
+- All acceptance criteria met.
+- `./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug` passes.
+- No `worker/` diff.
+- No Room schema change.
+- Manual QA completed and recorded.
+- Reviewer returns PASS or PASS_WITH_NOTES.
+- Branch `17f-plan` ready for ChatGPT GitHub review before merge to `dev`.
+
+---
+## Phase 17F Completion Record
+
+### Status
+
+**COMPLETE**
+
+Completion date: 2026-08-23
+
+Implementation branch:
+
+`17f-android-remote-lookup`
+
+### Final Implementation Summary
+
+Phase 17F connected the Android application to the deployed GymLedger Food Lookup Worker for optional generic USDA food search while preserving GymLedger's local-first and offline-capable behavior.
+
+Final Android flow:
+
+`SmartFoodEntrySheet`
+→ `SmartFoodEntryViewModel`
+→ `RemoteFoodLookupRepository`
+→ `FoodLookupClient`
+→ `OkHttpFoodLookupClient`
+→ GymLedger Cloudflare Worker
+→ USDA FoodData Central
+
+Implemented behavior includes:
+
+- optional Online search mode inside Smart Food Entry;
+- blank endpoint using the production Worker default;
+- HTTPS validation for custom endpoints;
+- user-entered `X-GymLedger-Key`;
+- local and remote availability gates;
+- lazy `/v1/config` loading;
+- 5-minute monotonic in-memory config cache;
+- manual remote submission through IME Search or Search online;
+- cancellation-aware OkHttp requests;
+- strict JSON decoding;
+- source and Approximate attribution;
+- nullable/invalid nutrition filtering;
+- remote result selection into the existing editable food flow;
+- quantity-based calorie and macro recalculation;
+- explicit local Save only;
+- no automatic persistence of remote suggestions;
+- selected-food vertical scrolling and IME-safe access to all editable fields/actions;
+- scroll reset when changing or re-selecting a reference food.
+
+No barcode lookup UI was introduced.
+
+### Automated Validation
+
+Final validation:
+
+```text
+./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
+BUILD SUCCESSFUL
+```
+
+Test result:
+
+```text
+289 tests
+0 failures
+0 errors
+```
+
+Additional validation:
+
+```text
 git diff --check
-git diff -- app/src build.gradle.kts settings.gradle.kts gradle/libs.versions.toml
+PASS
 ```
 
-From Worker:
+No real API key or secret was committed.
 
-```bash
-cd worker/food-lookup
+### Technical Review
 
-npm ci
-npm run typecheck
-npm test
-npx wrangler deploy --dry-run
-```
+ChatGPT GitHub technical review:
 
-Cloudflare identity and resources:
+**PASS**
 
-```bash
-npx wrangler whoami
-npx wrangler d1 list
-npx wrangler d1 migrations list gymledger-food-lookup --remote
-npx wrangler secret list
-```
+Final implementation review confirmed:
 
-Remote migration and deploy:
+- Android-only Phase 17F scope;
+- Worker contract alignment;
+- endpoint validation;
+- local and remote gating;
+- safe secret handling;
+- strict response parsing;
+- cancellation behavior;
+- config caching;
+- nullable nutrition filtering;
+- explicit-save semantics;
+- offline-first behavior;
+- no Room schema changes;
+- no Worker changes;
+- no barcode implementation;
+- no navigation changes;
+- no `FoodReference` / `FoodReferenceCalculator` changes;
+- final Smart Food Entry scrolling and reselection reset behavior.
 
-```bash
-npx wrangler d1 migrations apply gymledger-food-lookup --remote
-npx wrangler deploy
-```
+### Manual UI QA
 
-Secret safety:
+Manual UI QA completed on 2026-08-23.
 
-```bash
-git status --short --untracked-files=all
+PASS:
 
-git grep -nE \
-  "GYMLEDGER_API_KEY=|USDA_API_KEY=|OPEN_FOOD_FACTS_USER_AGENT=.*@" \
-  -- ':!docs/CURRENT_PHASE.md' \
-     ':!docs/IMPLEMENTATION_PLAN.md' \
-     ':!worker/food-lookup/README.md' || true
-```
+- Online-disabled local flow.
+- Missing API key gate.
+- USDA-disabled local gate.
+- Local safe-mode gate.
+- Invalid custom endpoint.
+- Default endpoint behavior.
+- Remote config loading state.
+- Config cancellation behavior.
+- Smart Entry sheet dismissal/cancellation behavior.
+- Valid-query pre-submit state.
+- IME Search request submission.
+- Search online button.
+- Live USDA generic lookup through the production Worker.
+- USDA source attribution.
+- Approximate attribution.
+- Stale remote results clear when the query changes.
+- Remote-result selection.
+- Editable quantity and nutrition fields.
+- Calories, protein, carbs, and fat recalculate with quantity changes.
+- Explicit Save creates a normal local Food.
+- Discarding a remote suggestion does not auto-save it.
+- Saved Food persists after app restart / force-stop.
+- Saved Food remains available offline.
+- Local reference flow remains usable.
+- Selected-food form is vertically scrollable.
+- Bottom actions remain reachable.
+- Change returns to reference search.
+- Selecting another reference after Change resets the selected-food scroll position.
+- Re-selecting a reference starts from the top.
+- No barcode UI introduced.
 
-Review every match manually.
+Overall manual QA:
 
-Regex checks do not replace manual inspection.
+**PASS**
 
-## Stop Conditions
+### Production Worker Restoration
 
-Stop before deployment if:
+The Worker was temporarily enabled only for controlled Phase 17F integration QA.
 
-- Phase 17E.3 is not merged into `dev`
-- tests fail
-- typecheck fails
-- Wrangler dry run fails
-- authentication can be bypassed
-- lookup authentication is not wired
-- the wrong Cloudflare account is active
-- the configured D1 database does not match
-- an unexpected migration appears
-- a required secret is missing
-- a real secret is tracked
-- `/v1/config` exposes sensitive information
-- Android files changed
-- Cloudflare unexpectedly requires billing
-- provider code changed without review
+After QA, production runtime configuration was restored to its conservative default state.
 
-Stop after deployment and report before patching provider code if:
+Verified final behavior:
 
-- production payload differs materially from tested contracts
-- provider responses expose unexpected fields
-- cache behavior is incorrect
-- usage counters are incorrect
-- authentication fails
-- safe mode fails
-- runtime switches cannot be restored
-- rollback becomes necessary
+- `safeMode = true`
+- `onlineLookupAvailable = false`
+- USDA provider disabled
+- Open Food Facts provider disabled
+- generic food search disabled
+- barcode lookup disabled
 
-## Suggested Commits
+Runtime overrides used for controlled QA were removed after verification.
 
-Planning:
+### Scope Verification
 
-```text
-docs: plan phase 17e4 worker deployment
-```
+Confirmed no Phase 17F implementation changes to:
 
-Authentication preparation, when required:
+- `worker/**`
+- Room entities / DAO / database schema
+- `FoodRepository`
+- `SettingsRepository`
+- `OnlineAssistanceSettings`
+- `FoodReference`
+- `FoodReferenceCalculator`
+- navigation
+- barcode/scanning functionality
 
-```text
-fix: enforce food lookup API authentication
-```
+OkHttp was the only new runtime dependency required by the phase.
 
-Deployment record:
+### Known Unrelated Issue
 
-```text
-docs: record food lookup worker deployment
-```
+During manual QA, an existing Foods-screen search-input issue was discovered:
 
-## Code Preparation Status
+- rapid typing can cause cursor jumps / reordered characters in `Search foods`;
+- the behavior was confirmed to already exist on `dev`;
+- it was not introduced by Phase 17F;
+- it is intentionally excluded from this phase and will be fixed in a dedicated post-17F bugfix.
 
-Authentication wiring complete. Protected lookup routes now require `X-GymLedger-Key` header.
+### Final Verdict
 
-Pending: deployment, remote D1 migration, secret configuration, production smoke tests.
+**PASS — PHASE 17F COMPLETE**
 
-See [docs/FOOD_LOOKUP_DEPLOYMENT.md](FOOD_LOOKUP_DEPLOYMENT.md) for deployment template.
+All Phase 17F acceptance criteria, automated validation, technical review, manual runtime QA, live Worker integration, offline behavior, explicit-save semantics, scope gates, and production restoration requirements are complete.
+
+Next planned roadmap phase after the dedicated Foods search bugfix and workflow-document refresh:
+
+**Phase 17G — Manual Barcode Lookup**

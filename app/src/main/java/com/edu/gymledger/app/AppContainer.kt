@@ -3,6 +3,10 @@ package com.edu.gymledger.app
 import android.content.Context
 import androidx.room.Room
 import com.edu.gymledger.data.db.GymLedgerDatabase
+import com.edu.gymledger.data.remote.FoodLookupClient
+import com.edu.gymledger.data.remote.MonotonicTimeSource
+import com.edu.gymledger.data.remote.OkHttpFoodLookupClient
+import com.edu.gymledger.data.remote.SystemMonotonicTimeSource
 import com.edu.gymledger.data.repository.BodyMeasurementRepository
 import com.edu.gymledger.data.repository.ExerciseRepository
 import com.edu.gymledger.data.repository.FoodReferenceRepository
@@ -12,6 +16,9 @@ import com.edu.gymledger.data.repository.RoutineRepository
 import com.edu.gymledger.data.repository.SettingsRepository
 import com.edu.gymledger.data.repository.WorkoutRepository
 import com.edu.gymledger.data.repository.WorkoutSessionExerciseRepository
+import com.edu.gymledger.data.repository.lookup.RemoteFoodLookupRepository
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 
 object AppContainer {
     private var database: GymLedgerDatabase? = null
@@ -105,4 +112,23 @@ object AppContainer {
 
     lateinit var settingsRepository: SettingsRepository
         private set
+
+    private val sharedOkHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .writeTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val monotonicTimeSource: MonotonicTimeSource = SystemMonotonicTimeSource
+
+    val foodLookupClient: FoodLookupClient by lazy {
+        OkHttpFoodLookupClient(sharedOkHttpClient)
+    }
+
+    val remoteFoodLookupRepository: RemoteFoodLookupRepository by lazy {
+        RemoteFoodLookupRepository(foodLookupClient, monotonicTimeSource)
+    }
 }
