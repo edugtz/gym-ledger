@@ -53,7 +53,6 @@ class FoodsViewModel(
                 }
                 .collect { foods ->
                     _uiState.value = _uiState.value.copy(
-                        searchQuery = searchQuery.value,
                         foods = foods,
                         isLoading = false
                     )
@@ -63,6 +62,9 @@ class FoodsViewModel(
 
     fun updateSearchQuery(query: String) {
         searchQuery.value = query
+        _uiState.value = _uiState.value.copy(
+            searchQuery = query
+        )
     }
 
     fun addFood(
