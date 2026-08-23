@@ -360,3 +360,196 @@ feat: add online food lookup
 - Branch `17f-plan` ready for ChatGPT GitHub review before merge to `dev`.
 
 ---
+## Phase 17F Completion Record
+
+### Status
+
+**COMPLETE**
+
+Completion date: 2026-08-23
+
+Implementation branch:
+
+`17f-android-remote-lookup`
+
+### Final Implementation Summary
+
+Phase 17F connected the Android application to the deployed GymLedger Food Lookup Worker for optional generic USDA food search while preserving GymLedger's local-first and offline-capable behavior.
+
+Final Android flow:
+
+`SmartFoodEntrySheet`
+→ `SmartFoodEntryViewModel`
+→ `RemoteFoodLookupRepository`
+→ `FoodLookupClient`
+→ `OkHttpFoodLookupClient`
+→ GymLedger Cloudflare Worker
+→ USDA FoodData Central
+
+Implemented behavior includes:
+
+- optional Online search mode inside Smart Food Entry;
+- blank endpoint using the production Worker default;
+- HTTPS validation for custom endpoints;
+- user-entered `X-GymLedger-Key`;
+- local and remote availability gates;
+- lazy `/v1/config` loading;
+- 5-minute monotonic in-memory config cache;
+- manual remote submission through IME Search or Search online;
+- cancellation-aware OkHttp requests;
+- strict JSON decoding;
+- source and Approximate attribution;
+- nullable/invalid nutrition filtering;
+- remote result selection into the existing editable food flow;
+- quantity-based calorie and macro recalculation;
+- explicit local Save only;
+- no automatic persistence of remote suggestions;
+- selected-food vertical scrolling and IME-safe access to all editable fields/actions;
+- scroll reset when changing or re-selecting a reference food.
+
+No barcode lookup UI was introduced.
+
+### Automated Validation
+
+Final validation:
+
+```text
+./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
+BUILD SUCCESSFUL
+```
+
+Test result:
+
+```text
+289 tests
+0 failures
+0 errors
+```
+
+Additional validation:
+
+```text
+git diff --check
+PASS
+```
+
+No real API key or secret was committed.
+
+### Technical Review
+
+ChatGPT GitHub technical review:
+
+**PASS**
+
+Final implementation review confirmed:
+
+- Android-only Phase 17F scope;
+- Worker contract alignment;
+- endpoint validation;
+- local and remote gating;
+- safe secret handling;
+- strict response parsing;
+- cancellation behavior;
+- config caching;
+- nullable nutrition filtering;
+- explicit-save semantics;
+- offline-first behavior;
+- no Room schema changes;
+- no Worker changes;
+- no barcode implementation;
+- no navigation changes;
+- no `FoodReference` / `FoodReferenceCalculator` changes;
+- final Smart Food Entry scrolling and reselection reset behavior.
+
+### Manual UI QA
+
+Manual UI QA completed on 2026-08-23.
+
+PASS:
+
+- Online-disabled local flow.
+- Missing API key gate.
+- USDA-disabled local gate.
+- Local safe-mode gate.
+- Invalid custom endpoint.
+- Default endpoint behavior.
+- Remote config loading state.
+- Config cancellation behavior.
+- Smart Entry sheet dismissal/cancellation behavior.
+- Valid-query pre-submit state.
+- IME Search request submission.
+- Search online button.
+- Live USDA generic lookup through the production Worker.
+- USDA source attribution.
+- Approximate attribution.
+- Stale remote results clear when the query changes.
+- Remote-result selection.
+- Editable quantity and nutrition fields.
+- Calories, protein, carbs, and fat recalculate with quantity changes.
+- Explicit Save creates a normal local Food.
+- Discarding a remote suggestion does not auto-save it.
+- Saved Food persists after app restart / force-stop.
+- Saved Food remains available offline.
+- Local reference flow remains usable.
+- Selected-food form is vertically scrollable.
+- Bottom actions remain reachable.
+- Change returns to reference search.
+- Selecting another reference after Change resets the selected-food scroll position.
+- Re-selecting a reference starts from the top.
+- No barcode UI introduced.
+
+Overall manual QA:
+
+**PASS**
+
+### Production Worker Restoration
+
+The Worker was temporarily enabled only for controlled Phase 17F integration QA.
+
+After QA, production runtime configuration was restored to its conservative default state.
+
+Verified final behavior:
+
+- `safeMode = true`
+- `onlineLookupAvailable = false`
+- USDA provider disabled
+- Open Food Facts provider disabled
+- generic food search disabled
+- barcode lookup disabled
+
+Runtime overrides used for controlled QA were removed after verification.
+
+### Scope Verification
+
+Confirmed no Phase 17F implementation changes to:
+
+- `worker/**`
+- Room entities / DAO / database schema
+- `FoodRepository`
+- `SettingsRepository`
+- `OnlineAssistanceSettings`
+- `FoodReference`
+- `FoodReferenceCalculator`
+- navigation
+- barcode/scanning functionality
+
+OkHttp was the only new runtime dependency required by the phase.
+
+### Known Unrelated Issue
+
+During manual QA, an existing Foods-screen search-input issue was discovered:
+
+- rapid typing can cause cursor jumps / reordered characters in `Search foods`;
+- the behavior was confirmed to already exist on `dev`;
+- it was not introduced by Phase 17F;
+- it is intentionally excluded from this phase and will be fixed in a dedicated post-17F bugfix.
+
+### Final Verdict
+
+**PASS — PHASE 17F COMPLETE**
+
+All Phase 17F acceptance criteria, automated validation, technical review, manual runtime QA, live Worker integration, offline behavior, explicit-save semantics, scope gates, and production restoration requirements are complete.
+
+Next planned roadmap phase after the dedicated Foods search bugfix and workflow-document refresh:
+
+**Phase 17G — Manual Barcode Lookup**

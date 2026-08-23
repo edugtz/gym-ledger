@@ -563,3 +563,177 @@ Commit only if validation passes, manual QA done, scope clean, no secret value p
 - Reviewer returns BLOCKED and the blocker cannot be resolved within scope.
 
 ---
+
+## 31. Final Execution Result
+
+### Phase
+
+Phase 17F — Android Remote Food Lookup Integration
+
+### Status
+
+**COMPLETE — PASS**
+
+Completion date: 2026-08-23
+
+Implementation branch:
+
+`17f-android-remote-lookup`
+
+### Final Architecture
+
+Implemented production path:
+
+`SmartFoodEntrySheet`
+→ `SmartFoodEntryViewModel`
+→ `RemoteFoodLookupRepository`
+→ `FoodLookupClient`
+→ `OkHttpFoodLookupClient`
+→ GymLedger Food Lookup Worker
+→ USDA FoodData Central
+
+Room/local `FoodRepository` remains the source of truth.
+
+Remote results remain ephemeral suggestions until the user explicitly saves them as a local Food.
+
+### Final Technical Decisions
+
+- OkHttp is the only new networking dependency.
+- `OkHttpFoodLookupClient` uses an injected `Call.Factory`.
+- Requests use asynchronous `Call.enqueue`.
+- Coroutine cancellation cancels the underlying OkHttp Call.
+- Connect/read/write timeouts are approximately 5 seconds.
+- JSON decoding is strict with unknown-field tolerance and no lenient parsing.
+- API key is transmitted only in `X-GymLedger-Key`.
+- `/v1/config` remains public and does not send the lookup key.
+- Blank endpoint resolves to the production GymLedger Worker.
+- Custom endpoints must be absolute HTTPS URLs with no userinfo, query, or fragment.
+- Generic USDA search requires all local and remote gates.
+- Config is fetched lazily when entering Online search.
+- Config is cached in memory for 5 minutes using monotonic time.
+- Search occurs only after explicit IME Search or Search online action.
+- No per-keystroke remote calls.
+- Remote nutrient values are nullable at the transport boundary.
+- Missing, negative, non-finite, or otherwise invalid nutrient results are filtered.
+- `FoodReference` and Room schemas were not changed.
+- Remote results use the existing editable quantity/nutrition/save flow.
+- Save remains explicit and local.
+- Selected-food content is vertically scrollable.
+- IME padding keeps lower fields/actions reachable.
+- Selected-food scroll resets when a new or re-selected reference becomes active.
+
+### Validation Evidence
+
+Final full gate:
+
+```text
+./gradlew clean kspDebugKotlin lintDebug testDebugUnitTest assembleDebug
+BUILD SUCCESSFUL
+```
+
+Test suite:
+
+```text
+289 tests
+0 failures
+0 errors
+```
+
+Whitespace gate:
+
+```text
+git diff --check
+PASS
+```
+
+Scope inspection confirmed:
+
+- no `worker/**` implementation diff;
+- no Room schema diff;
+- no `FoodRepository` diff;
+- no `SettingsRepository` diff;
+- no `OnlineAssistanceSettings` diff;
+- no `FoodReference` / `FoodReferenceCalculator` diff;
+- no navigation changes;
+- no barcode UI.
+
+### Technical Review Result
+
+ChatGPT GitHub review:
+
+**PASS**
+
+The final scroll-reset patch was independently reviewed after manual QA discovered retained scroll position across Change → reselect.
+
+The final implementation resets the selected-content scroll state whenever a non-null selected reference becomes active while preserving the search-state LazyColumn behavior.
+
+### Manual QA Result
+
+**PASS**
+
+Validated:
+
+- all local availability gates;
+- production conservative Worker state;
+- controlled live USDA lookup;
+- explicit manual search behavior;
+- source/Approximate attribution;
+- stale-result clearing;
+- remote-result selection;
+- quantity/macronutrient recalculation;
+- user editing before save;
+- explicit local persistence;
+- no auto-save;
+- restart persistence;
+- offline saved-food access;
+- selected-content scrolling;
+- IME-safe lower actions;
+- Change and reselection;
+- scroll reset on reselection;
+- absence of barcode controls.
+
+### Live Worker Integration
+
+Controlled production integration test:
+
+**PASS**
+
+Confirmed end-to-end path:
+
+Android
+→ GymLedger Worker
+→ USDA
+→ normalized Worker response
+→ Android domain mapping
+→ Smart Food Entry UI
+
+### Production Restoration
+
+After integration QA, runtime overrides were removed and the deployed Worker returned to conservative operation:
+
+- safe mode enabled;
+- online lookup unavailable;
+- USDA disabled;
+- Open Food Facts disabled;
+- generic search disabled;
+- barcode lookup disabled.
+
+Result:
+
+**PASS**
+
+### Deferred Unrelated Bug
+
+A pre-existing `FoodsScreen` search input issue was discovered during QA.
+
+Rapid typing can cause the displayed search text/cursor to use delayed repository state.
+
+The same implementation exists on `dev`, so it is not a Phase 17F regression.
+
+It will be addressed immediately after the Phase 17F merge in a dedicated branch.
+
+### Final Result
+
+**PASS — READY FOR MERGE TO `dev`**
+
+Phase 17F implementation, validation, technical review, manual QA, production integration, production restoration, and scope verification are complete.
