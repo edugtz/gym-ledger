@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeAndValidateBarcode } from "./barcode";
+import { normalizeAndValidateBarcode, areGtinEquivalent, canonicalizeGtin } from "./barcode";
 
 describe("normalizeAndValidateBarcode", () => {
   it("accepts valid 13-digit EAN-13", () => {
@@ -92,5 +92,52 @@ describe("normalizeAndValidateBarcode", () => {
 
   it("rejects very long input", () => {
     expect(normalizeAndValidateBarcode("1".repeat(50)).ok).toBe(false);
+  });
+});
+
+describe("canonicalizeGtin", () => {
+  it("pads valid GTIN lengths to GTIN-14", () => {
+    expect(canonicalizeGtin("12345670")).toBe("00000012345670");
+    expect(canonicalizeGtin("810104461665")).toBe("00810104461665");
+    expect(canonicalizeGtin("0810104461665")).toBe("00810104461665");
+    expect(canonicalizeGtin("00012345600012")).toBe("00012345600012");
+  });
+
+  it("returns null for non-digit input", () => {
+    expect(canonicalizeGtin("ABC123")).toBeNull();
+  });
+
+  it("returns null for unsupported lengths", () => {
+    expect(canonicalizeGtin("123")).toBeNull();
+    expect(canonicalizeGtin("123456789")).toBeNull();
+    expect(canonicalizeGtin("1".repeat(15))).toBeNull();
+  });
+});
+
+describe("areGtinEquivalent", () => {
+  it("treats exact match as equivalent", () => {
+    expect(areGtinEquivalent("3017620422003", "3017620422003")).toBe(true);
+  });
+
+  it("treats UPC-12 vs zero-prefixed EAN-13 as equivalent", () => {
+    expect(areGtinEquivalent("810104461665", "0810104461665")).toBe(true);
+  });
+
+  it("is symmetric for reverse representation", () => {
+    expect(areGtinEquivalent("0810104461665", "810104461665")).toBe(true);
+  });
+
+  it("treats GTIN-14 equivalent padding as equivalent", () => {
+    expect(areGtinEquivalent("681131077637", "0681131077637")).toBe(true);
+    expect(areGtinEquivalent("12345670", "00000012345670")).toBe(true);
+  });
+
+  it("rejects genuinely different codes", () => {
+    expect(areGtinEquivalent("3017620422003", "9999999999999")).toBe(false);
+  });
+
+  it("rejects malformed provider code", () => {
+    expect(areGtinEquivalent("ABC123", "3017620422003")).toBe(false);
+    expect(areGtinEquivalent("123", "3017620422003")).toBe(false);
   });
 });
