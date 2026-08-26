@@ -58,12 +58,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.edu.gymledger.app.AppContainer
 import com.edu.gymledger.domain.model.FoodReference
 import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
+import com.edu.gymledger.domain.model.lookup.PackagedFoodReferenceMapper.toFoodReferenceOrNull
 import com.edu.gymledger.data.repository.lookup.OnlineSearchAvailability
+import com.edu.gymledger.data.repository.lookup.BarcodeLookupAvailability
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SmartFoodEntrySheet(
     onDismiss: () -> Unit,
+    onManualCreate: () -> Unit = {},
     viewModel: SmartFoodEntryViewModel = viewModel(
         factory = SmartFoodEntryViewModelFactory(
             referenceRepository = AppContainer.foodReferenceRepository,
@@ -95,6 +98,10 @@ fun SmartFoodEntrySheet(
                     onDismiss()
                 }
                 is SmartFoodEntryEvent.Error -> {
+                }
+                is SmartFoodEntryEvent.CreateManually -> {
+                    onDismiss()
+                    onManualCreate()
                 }
             }
         }
@@ -151,15 +158,15 @@ fun SmartFoodEntrySheet(
             Spacer(Modifier.height(20.dp))
 
             if (uiState.selectedReference == null) {
-                if (uiState.isOnlineAvailable) {
-                    OnlineModeSelector(
-                        onlineMode = uiState.onlineMode,
-                        onToggleOnlineMode = viewModel::toggleOnlineMode
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
+                OnlineModeSelector(
+                    mode = uiState.mode,
+                    onSelectLocal = { viewModel.toggleOnlineMode(false) },
+                    onSelectOnline = { viewModel.toggleOnlineMode(true) },
+                    onSelectBarcode = viewModel::onBarcodeModeSelected
+                )
+                Spacer(Modifier.height(12.dp))
 
-                if (uiState.onlineMode && uiState.isOnlineAvailable) {
+                if (uiState.mode == SmartFoodEntryMode.ONLINE) {
                     OnlineSearchSection(
                         query = uiState.onlineQuery,
                         results = uiState.onlineResults,
@@ -172,6 +179,22 @@ fun SmartFoodEntrySheet(
                         onQueryChange = viewModel::onOnlineQueryChange,
                         onSubmit = viewModel::submitOnlineSearch,
                         onSelect = viewModel::selectOnlineResult
+                    )
+                } else if (uiState.mode == SmartFoodEntryMode.BARCODE) {
+                    BarcodeInputSection(
+                        barcode = uiState.barcodeText,
+                        result = uiState.barcodeResult,
+                        isLoading = uiState.isBarcodeSearching,
+                        isCheckingAvailability = uiState.isCheckingOnlineAvailability,
+                        hasSubmitted = uiState.hasSubmittedBarcodeLookup,
+                        error = uiState.barcodeError,
+                        isNotFound = uiState.barcodeNotFound,
+                        availability = uiState.barcodeAvailability,
+                        onBarcodeChange = viewModel::onBarcodeTextChange,
+                        onSubmit = viewModel::submitBarcodeLookup,
+                        onUseProduct = viewModel::useBarcodeProduct,
+                        onCreateManually = viewModel::createManuallyFromBarcode,
+                        formatNumber = viewModel::formatMacro
                     )
                 } else {
                     SmartSearchSection(
@@ -202,6 +225,7 @@ fun SmartFoodEntrySheet(
                 Spacer(Modifier.height(16.dp))
 
                 SmartNutritionSection(
+                    sourceLabel = uiState.selectedReference!!.sourceLabel,
                     nameText = uiState.nameText,
                     caloriesText = uiState.caloriesText,
                     proteinText = uiState.proteinText,
@@ -237,30 +261,171 @@ fun SmartFoodEntrySheet(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun OnlineModeSelector(
-    onlineMode: Boolean,
-    onToggleOnlineMode: (Boolean) -> Unit
+    mode: SmartFoodEntryMode,
+    onSelectLocal: () -> Unit,
+    onSelectOnline: () -> Unit,
+    onSelectBarcode: () -> Unit
 ) {
-    Row(
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         FilterChip(
-            selected = !onlineMode,
-            onClick = { onToggleOnlineMode(false) },
+            selected = mode == SmartFoodEntryMode.LOCAL,
+            onClick = onSelectLocal,
             label = { Text("Local reference") },
             colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
             )
         )
         FilterChip(
-            selected = onlineMode,
-            onClick = { onToggleOnlineMode(true) },
+            selected = mode == SmartFoodEntryMode.ONLINE,
+            onClick = onSelectOnline,
             label = { Text("Online search") },
             colors = FilterChipDefaults.filterChipColors(
                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
             )
         )
+        FilterChip(
+            selected = mode == SmartFoodEntryMode.BARCODE,
+            onClick = onSelectBarcode,
+            label = { Text("Barcode") },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+    }
+}
+
+@Composable
+private fun BarcodeInputSection(
+    barcode: String,
+    result: com.edu.gymledger.domain.model.lookup.RemotePackagedFoodResult?,
+    isLoading: Boolean,
+    isCheckingAvailability: Boolean,
+    hasSubmitted: Boolean,
+    error: String?,
+    isNotFound: Boolean,
+    availability: BarcodeLookupAvailability,
+    onBarcodeChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onUseProduct: () -> Unit,
+    onCreateManually: () -> Unit,
+    formatNumber: (Double) -> String
+) {
+    val availabilityMessage = SmartFoodEntryAvailabilityUi.barcodeAvailabilityMessage(
+        availability = availability,
+        isChecking = isCheckingAvailability
+    )
+    if (isCheckingAvailability) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = "Checking barcode availability...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+    } else if (availabilityMessage != null) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+            )
+        ) {
+            Text(
+                text = availabilityMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+    OutlinedTextField(
+        value = barcode,
+        onValueChange = onBarcodeChange,
+        label = { Text("Barcode") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+        enabled = SmartFoodEntryAvailabilityUi.isBarcodeActionEnabled(availability, isLoading)
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Button(
+            onClick = onSubmit,
+            enabled = SmartFoodEntryAvailabilityUi.isBarcodeActionEnabled(availability, isLoading)
+        ) { Text(if (isLoading) "Looking up..." else "Look up barcode") }
+    }
+    if (error != null && hasSubmitted) {
+        Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+        if (isNotFound) {
+            OutlinedButton(onClick = onCreateManually) { Text("Create manually") }
+        }
+    }
+    result?.let {
+        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.padding(12.dp)) {
+                Text(it.name, fontWeight = FontWeight.SemiBold)
+                if (it.brands.isNotEmpty()) Text(it.brands.joinToString(), style = MaterialTheme.typography.bodySmall)
+                Text("Barcode: ${it.barcode}", style = MaterialTheme.typography.bodySmall)
+                if (it.quantity != null) Text("Quantity: ${it.quantity}", style = MaterialTheme.typography.bodySmall)
+                if (it.servingSize != null) Text("Serving size: ${it.servingSize}", style = MaterialTheme.typography.bodySmall)
+                if (it.hasCompleteNutrition) {
+                    Text(
+                        "${it.caloriesPer100g!!} kcal, ${formatNumber(it.proteinPer100g!!)} g protein, " +
+                            "${formatNumber(it.carbohydratePer100g!!)} g carbs, ${formatNumber(it.fatPer100g!!)} g fat per 100 g"
+                    )
+                } else {
+                    Text(
+                        "This product doesn't include complete nutrition per 100 g. You can create it manually instead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val sourceText = it.attribution
+                if (sourceText.isNotBlank()) {
+                    Text(sourceText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (it.isApproximate) {
+                    Text("Approximate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(onClick = onUseProduct, enabled = it.toFoodReferenceOrNull() != null) {
+                        Text("Use product")
+                    }
+                    OutlinedButton(onClick = onCreateManually, modifier = Modifier.weight(1f)) {
+                        Text("Create manually")
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -278,16 +443,10 @@ private fun OnlineSearchSection(
     onSubmit: () -> Unit,
     onSelect: (RemoteFoodLookupResult) -> Unit
 ) {
-    val availabilityMessage = when (availability) {
-        is OnlineSearchAvailability.NotConfigured -> "Online lookup isn't configured. Add an API key in Settings."
-        is OnlineSearchAvailability.UsdaDisabled -> "Online lookup isn't available. Enable USDA in Settings."
-        is OnlineSearchAvailability.SafeMode -> "Online lookup isn't available while safe mode is on."
-        is OnlineSearchAvailability.InvalidEndpoint -> "The lookup endpoint URL is invalid. Check Settings."
-        is OnlineSearchAvailability.RemoteDisabled ->
-            if (isCheckingOnlineAvailability) null else "Online lookup is temporarily disabled."
-        is OnlineSearchAvailability.Disabled -> null
-        is OnlineSearchAvailability.Available -> null
-    }
+    val availabilityMessage = SmartFoodEntryAvailabilityUi.onlineAvailabilityMessage(
+        availability = availability,
+        isChecking = isCheckingOnlineAvailability
+    )
 
     if (isCheckingOnlineAvailability) {
         Card(
@@ -360,7 +519,7 @@ private fun OnlineSearchSection(
         keyboardActions = KeyboardActions(
             onSearch = { onSubmit() }
         ),
-        enabled = !isLoading && availability is OnlineSearchAvailability.Available
+        enabled = SmartFoodEntryAvailabilityUi.isOnlineInputEnabled(availability, isLoading)
     )
 
     Spacer(Modifier.height(8.dp))
@@ -371,9 +530,12 @@ private fun OnlineSearchSection(
     ) {
         Button(
             onClick = onSubmit,
-            enabled = !isLoading &&
-                query.trim().length >= minQueryLength &&
-                availability is OnlineSearchAvailability.Available
+            enabled = SmartFoodEntryAvailabilityUi.isOnlineSubmitEnabled(
+                availability = availability,
+                isLoading = isLoading,
+                query = query,
+                minQueryLength = minQueryLength
+            )
         ) {
             if (isLoading) {
                 CircularProgressIndicator(
@@ -398,6 +560,14 @@ private fun OnlineSearchSection(
         )
     }
 
+    val helperText = SmartFoodEntryAvailabilityUi.onlineQueryHelperText(
+        availability = availability,
+        query = query,
+        minQueryLength = minQueryLength,
+        isLoading = isLoading,
+        hasSubmitted = hasSubmittedOnlineSearch
+    )
+
     if (results.isNotEmpty()) {
         LazyColumn(
             modifier = Modifier
@@ -412,16 +582,9 @@ private fun OnlineSearchSection(
                 )
             }
         }
-    } else if (!isLoading && query.trim().length < minQueryLength) {
+    } else if (helperText != null) {
         Text(
-            text = "Enter at least $minQueryLength characters to search online.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            modifier = Modifier.padding(vertical = 24.dp)
-        )
-    } else if (!isLoading && !hasSubmittedOnlineSearch) {
-        Text(
-            text = "Press Search online to search.",
+            text = helperText,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             modifier = Modifier.padding(vertical = 24.dp)
@@ -771,6 +934,7 @@ private fun SmartQuantitySection(
 
 @Composable
 private fun SmartNutritionSection(
+    sourceLabel: String,
     nameText: String,
     caloriesText: String,
     proteinText: String,
@@ -789,7 +953,11 @@ private fun SmartNutritionSection(
     )
     Spacer(Modifier.height(4.dp))
     Text(
-        text = "Approximate values from local reference. Review before saving.",
+        text = if (sourceLabel == "Local reference") {
+            "Approximate values from local reference. Review before saving."
+        } else {
+            "Approximate values from $sourceLabel. Review before saving."
+        },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )

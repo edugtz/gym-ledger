@@ -5,6 +5,8 @@ import com.edu.gymledger.data.remote.dto.FoodLookupConfigDto
 import com.edu.gymledger.data.remote.dto.FoodLookupConfigResponseDto
 import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 import com.edu.gymledger.data.remote.dto.GenericLookupResponseDto
+import com.edu.gymledger.data.remote.dto.PackagedFoodLookupDataDto
+import com.edu.gymledger.data.remote.dto.PackagedFoodLookupResponseDto
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import okhttp3.Call
@@ -64,6 +66,30 @@ class OkHttpFoodLookupClient(
         return executeRequest(requestBuilder.build()) { body ->
             val envelope = json.decodeFromString(GenericLookupResponseDto.serializer(), body)
             check(envelope.ok) { "Generic response envelope has ok=false" }
+            envelope.data
+        }
+    }
+
+    override suspend fun lookupBarcode(
+        baseUrl: String,
+        apiKey: String,
+        barcode: String
+    ): FoodLookupOutcome<PackagedFoodLookupDataDto> {
+        val url = baseUrl.toHttpUrlOrNull()?.newBuilder()
+            ?.addPathSegments("v1/foods/barcode")
+            ?.addPathSegment(barcode)
+            ?.build()
+            ?: return FoodLookupOutcome.Error(FoodLookupError.Transport)
+
+        return executeRequest(
+            Request.Builder()
+                .url(url)
+                .get()
+                .addHeader("X-GymLedger-Key", apiKey)
+                .build()
+        ) { body ->
+            val envelope = json.decodeFromString(PackagedFoodLookupResponseDto.serializer(), body)
+            check(envelope.ok) { "Barcode response envelope has ok=false" }
             envelope.data
         }
     }
@@ -131,6 +157,7 @@ class OkHttpFoodLookupClient(
         if (!code.isNullOrBlank()) {
             when (code) {
                 "invalid_query" -> return FoodLookupOutcome.Error(FoodLookupError.InvalidQuery)
+                "invalid_barcode" -> return FoodLookupOutcome.Error(FoodLookupError.InvalidBarcode)
                 "unauthorized" -> return FoodLookupOutcome.Error(FoodLookupError.Unauthorized)
                 "lookup_disabled", "online_lookup_disabled" ->
                     return FoodLookupOutcome.Error(FoodLookupError.LookupDisabled)

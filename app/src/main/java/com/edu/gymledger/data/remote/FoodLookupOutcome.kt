@@ -10,6 +10,7 @@ enum class FoodLookupError {
     Transport,
     Unauthorized,
     InvalidQuery,
+    InvalidBarcode,
     LookupDisabled,
     ProviderDisabled,
     FeatureDisabled,

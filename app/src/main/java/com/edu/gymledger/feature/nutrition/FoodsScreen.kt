@@ -255,6 +255,11 @@ fun FoodsScreen(
         SmartFoodEntrySheet(
             onDismiss = {
                 showSmartSheet = false
+            },
+            onManualCreate = {
+                showSmartSheet = false
+                editingFood = null
+                showBottomSheet = true
             }
         )
     }
