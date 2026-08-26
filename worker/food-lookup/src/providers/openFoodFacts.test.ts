@@ -153,6 +153,97 @@ describe("fetchOpenFoodFactsProduct", () => {
     });
   });
 
+  describe("OFF v3 real failure/error shapes", () => {
+    it("maps failure + product_not_found to not_found", async () => {
+      const body = {
+        status: "failure",
+        status_verbose: "product not found",
+        result: { id: "product_not_found", name: "Product not found" },
+      };
+      const result = await fetchOpenFoodFactsProduct(
+        "0000000000000",
+        baseConfig,
+        mockFetchResponse(200, body)
+      );
+      expect(result.kind).toBe("not_found");
+    });
+
+    it("preserves success + product_not_found as not_found", async () => {
+      const body = {
+        status: "success",
+        status_verbose: "product not found",
+        result: { id: "product_not_found", name: "Product not found" },
+      };
+      const result = await fetchOpenFoodFactsProduct(
+        "0000000000000",
+        baseConfig,
+        mockFetchResponse(200, body)
+      );
+      expect(result.kind).toBe("not_found");
+    });
+
+    it("does not accept failure + product_found", async () => {
+      const body = {
+        status: "failure",
+        result: { id: "product_found", name: "Product found" },
+        product: { code: "3017620422003", product_name: "Nutella" },
+      };
+      const result = await fetchOpenFoodFactsProduct(
+        "3017620422003",
+        baseConfig,
+        mockFetchResponse(200, body)
+      );
+      expect(result.kind).toBe("unexpected");
+    });
+
+    it("accepts success_with_warnings + product_found with empty errors", async () => {
+      const body = {
+        status: "success_with_warnings",
+        warnings: ["Barcode normalization applied"],
+        errors: [],
+        result: { id: "product_found", name: "Product found" },
+        product: { code: "0810104461665", product_name: "Magic Spoon" },
+      };
+      const result = await fetchOpenFoodFactsProduct(
+        "810104461665",
+        baseConfig,
+        mockFetchResponse(200, body)
+      );
+      expect(result.kind).toBe("success");
+    });
+
+    it("does not accept success_with_warnings + product_found with non-empty errors", async () => {
+      const body = {
+        status: "success_with_warnings",
+        warnings: ["Barcode normalization applied"],
+        errors: ["fatal_server_error"],
+        result: { id: "product_found", name: "Product found" },
+        product: { code: "0810104461665", product_name: "Magic Spoon" },
+      };
+      const result = await fetchOpenFoodFactsProduct(
+        "810104461665",
+        baseConfig,
+        mockFetchResponse(200, body)
+      );
+      expect(result.kind).toBe("unexpected");
+    });
+
+    it("does not accept success + product_found with non-empty errors", async () => {
+      const body = {
+        status: "success",
+        errors: ["fatal_server_error"],
+        result: { id: "product_found", name: "Product found" },
+        product: { code: "3017620422003", product_name: "Nutella" },
+      };
+      const result = await fetchOpenFoodFactsProduct(
+        "3017620422003",
+        baseConfig,
+        mockFetchResponse(200, body)
+      );
+      expect(result.kind).toBe("unexpected");
+    });
+  });
+
   it("returns unexpected when result.id is missing", async () => {
     const body = {
       status: "success",
