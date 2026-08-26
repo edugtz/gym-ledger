@@ -94,7 +94,8 @@ export async function fetchOpenFoodFactsProduct(
 
   const obj = parsed as Record<string, unknown>;
 
-  if (obj.status !== "success") {
+  const status = obj.status;
+  if (status !== "success" && status !== "success_with_warnings") {
     return { kind: "unexpected", detail: "non_success_status" };
   }
 
@@ -109,6 +110,10 @@ export async function fetchOpenFoodFactsProduct(
   const result = obj.result as Record<string, unknown>;
   if (typeof result.id !== "string") {
     return { kind: "unexpected", detail: "missing_or_invalid_result_id" };
+  }
+
+  if (result.id === "product_not_found") {
+    return { kind: "not_found" };
   }
 
   if (result.id !== "product_found") {
