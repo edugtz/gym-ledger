@@ -1,6 +1,7 @@
 package com.edu.gymledger.feature.nutrition
 
 import com.edu.gymledger.data.remote.FoodLookupClient
+import com.edu.gymledger.data.remote.dto.PackagedFoodLookupDataDto
 import com.edu.gymledger.data.remote.FoodLookupError
 import com.edu.gymledger.data.remote.FoodLookupOutcome
 import com.edu.gymledger.data.remote.MonotonicTimeSource
@@ -9,10 +10,13 @@ import com.edu.gymledger.data.remote.dto.FeaturesDto
 import com.edu.gymledger.data.remote.dto.GenericLookupDataDto
 import com.edu.gymledger.data.remote.dto.GenericLookupItemDto
 import com.edu.gymledger.data.remote.dto.NutritionPer100gDto
+import com.edu.gymledger.data.remote.dto.PackagedFoodProductDto
+import com.edu.gymledger.data.remote.dto.PackagedNutritionDto
 import com.edu.gymledger.data.remote.dto.ProvidersDto
 import com.edu.gymledger.data.repository.FoodReferenceRepository
 import com.edu.gymledger.data.repository.FoodRepository
 import com.edu.gymledger.data.repository.OnlineAssistanceSettings
+import com.edu.gymledger.data.repository.lookup.BarcodeLookupAvailability
 import com.edu.gymledger.data.repository.lookup.OnlineSearchAvailability
 import com.edu.gymledger.data.repository.lookup.RemoteFoodLookupRepository
 import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
@@ -427,20 +431,20 @@ class SmartFoodEntryViewModelRemoteTest {
         viewModel.toggleOnlineMode(true)
         advanceUntilIdle()
 
-        assertTrue(viewModel.uiState.value.onlineMode)
+        assertTrue(viewModel.uiState.value.mode == SmartFoodEntryMode.ONLINE)
         assertTrue(viewModel.uiState.value.isCheckingOnlineAvailability)
 
         viewModel.toggleOnlineMode(false)
         advanceUntilIdle()
 
-        assertFalse(viewModel.uiState.value.onlineMode)
+        assertFalse(viewModel.uiState.value.mode == SmartFoodEntryMode.ONLINE)
         assertFalse(viewModel.uiState.value.isCheckingOnlineAvailability)
 
         fakeClient.configGate!!.complete(Unit)
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
-        assertFalse(state.onlineMode)
+        assertFalse(state.mode == SmartFoodEntryMode.ONLINE)
         assertFalse(state.isCheckingOnlineAvailability)
         assertTrue(state.onlineAvailability !is OnlineSearchAvailability.Available)
     }
@@ -549,7 +553,7 @@ class SmartFoodEntryViewModelRemoteTest {
         advanceUntilIdle()
 
         assertFalse(viewModel.uiState.value.isOnlineSearching)
-        assertFalse(viewModel.uiState.value.onlineMode)
+        assertFalse(viewModel.uiState.value.mode == SmartFoodEntryMode.ONLINE)
         fakeClient.searchGate!!.complete(Unit)
         advanceUntilIdle()
     }
@@ -590,6 +594,537 @@ class SmartFoodEntryViewModelRemoteTest {
         assertTrue(results.isNotEmpty())
     }
 
+    // --- Barcode mode tests ---
+
+    @Test
+    fun defaultMode_isLocal() {
+        assertEquals(SmartFoodEntryMode.LOCAL, viewModel.uiState.value.mode)
+    }
+
+    @Test
+    fun enterBarcodeMode_fetchesConfigOnceAndBecomesAvailable() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(SmartFoodEntryMode.BARCODE, state.mode)
+        assertTrue(state.barcodeAvailability is BarcodeLookupAvailability.Available)
+        assertFalse(state.isCheckingOnlineAvailability)
+        assertEquals(1, fakeClient.fetchConfigCallCount)
+    }
+
+    @Test
+    fun leavingBarcodeForOnline_cancelsInFlightLookup() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeGate = CompletableDeferred()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.isBarcodeSearching)
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.ONLINE, viewModel.uiState.value.mode)
+        assertFalse(viewModel.uiState.value.isBarcodeSearching)
+
+        fakeClient.barcodeGate!!.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(SmartFoodEntryMode.ONLINE, state.mode)
+        assertEquals(null, state.barcodeResult)
+        assertFalse(state.isBarcodeSearching)
+    }
+
+    @Test
+    fun leavingBarcodeForLocal_cancelsInFlightLookup() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeGate = CompletableDeferred()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.isBarcodeSearching)
+
+        viewModel.toggleOnlineMode(false)
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.LOCAL, viewModel.uiState.value.mode)
+        assertFalse(viewModel.uiState.value.isBarcodeSearching)
+        assertFalse(viewModel.uiState.value.isCheckingOnlineAvailability)
+
+        fakeClient.barcodeGate!!.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(SmartFoodEntryMode.LOCAL, state.mode)
+        assertEquals(null, state.barcodeResult)
+    }
+
+    @Test
+    fun barcodeLookup_staleResponseAfterModeSwitch_doesNotOverwriteState() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        fakeClient.barcodeGate = CompletableDeferred()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.isBarcodeSearching)
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        fakeClient.barcodeGate!!.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(SmartFoodEntryMode.ONLINE, state.mode)
+        assertEquals(null, state.barcodeResult)
+        assertEquals(null, state.barcodeError)
+        assertFalse(state.isBarcodeSearching)
+        assertFalse(state.barcodeNotFound)
+    }
+
+    @Test
+    fun barcodeTextChange_updatesStateWithoutLookup() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+
+        val state = viewModel.uiState.value
+        assertEquals("0123456789012", state.barcodeText)
+        assertEquals(0, fakeClient.lookupBarcodeCallCount)
+        assertFalse(state.hasSubmittedBarcodeLookup)
+    }
+
+    @Test
+    fun barcodeTextChange_clearsStaleResultAndError() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertEquals("Hazelnut spread", viewModel.uiState.value.barcodeResult?.name)
+
+        viewModel.onBarcodeTextChange("1234567890123")
+
+        val state = viewModel.uiState.value
+        assertEquals("1234567890123", state.barcodeText)
+        assertEquals(null, state.barcodeResult)
+        assertEquals(null, state.barcodeError)
+        assertFalse(state.hasSubmittedBarcodeLookup)
+        assertFalse(state.barcodeNotFound)
+    }
+
+    @Test
+    fun submitBarcodeLookup_invalidBarcode_noLookupAndValidationMessage() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("1234")
+        viewModel.submitBarcodeLookup()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isBarcodeSearching)
+        assertTrue(state.hasSubmittedBarcodeLookup)
+        assertEquals("Enter an 8, 12, 13, or 14-digit barcode.", state.barcodeError)
+        assertEquals(0, fakeClient.lookupBarcodeCallCount)
+    }
+
+    @Test
+    fun submitBarcodeLookup_availabilityNotAvailable_zeroLookups() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig().copy(safeMode = true))
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.barcodeAvailability !is BarcodeLookupAvailability.Available)
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isBarcodeSearching)
+        assertEquals(null, state.barcodeError)
+        assertEquals(0, fakeClient.lookupBarcodeCallCount)
+    }
+
+    @Test
+    fun submitBarcodeLookup_validBarcode_successShowsResult() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange(" 0123456789012 ")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(1, fakeClient.lookupBarcodeCallCount)
+        assertFalse(state.isBarcodeSearching)
+        assertEquals("0123456789012", state.barcodeText)
+        assertEquals("Hazelnut spread", state.barcodeResult?.name)
+        assertTrue(state.barcodeResult!!.hasCompleteNutrition)
+        assertEquals(null, state.barcodeError)
+        assertFalse(state.barcodeNotFound)
+    }
+
+    @Test
+    fun submitBarcodeLookup_duplicateSubmission_ignored() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        fakeClient.barcodeGate = CompletableDeferred()
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+
+        assertEquals(1, fakeClient.lookupBarcodeCallCount)
+        assertTrue(viewModel.uiState.value.isBarcodeSearching)
+
+        fakeClient.barcodeGate!!.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("Hazelnut spread", viewModel.uiState.value.barcodeResult?.name)
+    }
+
+    @Test
+    fun submitBarcodeLookup_unknownBarcode_setsBarcodeNotFoundState() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Empty
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("9999999999999")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.barcodeNotFound)
+        assertNotNull(state.barcodeError)
+        assertEquals(null, state.barcodeResult)
+        assertFalse(state.isBarcodeSearching)
+    }
+
+    @Test
+    fun submitBarcodeLookup_namelessProduct_setsBarcodeNotFoundState() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(
+            PackagedFoodLookupDataDto(
+                barcode = "0123456789012",
+                source = "OPEN_FOOD_FACTS",
+                attribution = "Open Food Facts — ODbL",
+                isApproximate = false,
+                product = PackagedFoodProductDto(
+                    externalId = "0123456789012",
+                    name = null,
+                    genericName = null,
+                    nutritionPer100g = PackagedNutritionDto(200.0, 5.0, 30.0, 10.0)
+                )
+            )
+        )
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.barcodeNotFound)
+        assertNotNull(state.barcodeError)
+        assertEquals(null, state.barcodeResult)
+        assertFalse(state.isBarcodeSearching)
+        assertEquals(1, fakeClient.lookupBarcodeCallCount)
+    }
+
+    @Test
+    fun submitBarcodeLookup_errorAfterSuccess_clearsStaleResult() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertEquals("Hazelnut spread", viewModel.uiState.value.barcodeResult?.name)
+
+        fakeClient.barcodeResult = FoodLookupOutcome.Error(FoodLookupError.Transport)
+        viewModel.onBarcodeTextChange("1234567890123")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(null, state.barcodeResult)
+        assertNotNull(state.barcodeError)
+        assertFalse(state.barcodeNotFound)
+    }
+
+    @Test
+    fun leavingBarcodeMode_clearsStaleBarcodeState() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.hasSubmittedBarcodeLookup)
+
+        viewModel.toggleOnlineMode(false)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(SmartFoodEntryMode.LOCAL, state.mode)
+        assertEquals(null, state.barcodeResult)
+        assertEquals(null, state.barcodeError)
+        assertFalse(state.isBarcodeSearching)
+        assertFalse(state.hasSubmittedBarcodeLookup)
+        assertFalse(state.barcodeNotFound)
+    }
+
+    @Test
+    fun resetState_cancelsInFlightBarcodeLookup() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        fakeClient.barcodeGate = CompletableDeferred()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.isBarcodeSearching)
+
+        viewModel.resetState()
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.LOCAL, viewModel.uiState.value.mode)
+        fakeClient.barcodeGate!!.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(null, state.barcodeResult)
+        assertFalse(state.isBarcodeSearching)
+        assertEquals(1, fakeClient.lookupBarcodeCallCount)
+    }
+
+    @Test
+    fun useBarcodeProduct_prefillsSelectedFoodFlow() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+
+        viewModel.useBarcodeProduct()
+
+        val state = viewModel.uiState.value
+        assertEquals("Hazelnut spread", state.selectedReference?.name)
+        assertEquals("100", state.gramsText)
+        assertEquals("544", state.caloriesText)
+        assertEquals("4", state.proteinText)
+    }
+
+    @Test
+    fun useBarcodeProduct_incompleteResult_doesNotSelectFood() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        fakeClient.barcodeResult = FoodLookupOutcome.Success(packagedDto(proteinG = null))
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+        advanceUntilIdle()
+        assertEquals(false, viewModel.uiState.value.barcodeResult?.hasCompleteNutrition)
+
+        viewModel.useBarcodeProduct()
+
+        assertEquals(null, viewModel.uiState.value.selectedReference)
+    }
+
+    @Test
+    fun settingsReemission_keepsConfirmedBarcodeAvailability() = runTest {
+        settingsFlow.value = barcodeSettings()
+        fakeClient.configResult = FoodLookupOutcome.Success(barcodeConfig())
+        advanceUntilIdle()
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.barcodeAvailability is BarcodeLookupAvailability.Available)
+
+        settingsFlow.value = barcodeSettings().copy(usdaEnabled = false)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.barcodeAvailability is BarcodeLookupAvailability.Available)
+        assertTrue(state.onlineAvailability is OnlineSearchAvailability.UsdaDisabled)
+    }
+
+    // --- Mode selector always visible (bug fix) ---
+
+    @Test
+    fun onlineDisabled_canStillSwitchToOnlineMode() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(onlineFoodLookupEnabled = false)
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.isOnlineAvailable)
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.ONLINE, viewModel.uiState.value.mode)
+        assertEquals(0, fakeClient.fetchConfigCallCount)
+        assertTrue(viewModel.uiState.value.onlineAvailability is OnlineSearchAvailability.Disabled)
+    }
+
+    @Test
+    fun barcodeMode_selectableWhenMissingApiKey() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "",
+            openFoodFactsEnabled = true
+        )
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.BARCODE, viewModel.uiState.value.mode)
+        assertTrue(viewModel.uiState.value.barcodeAvailability is BarcodeLookupAvailability.NotConfigured)
+    }
+
+    @Test
+    fun barcodeMode_selectableWhenSafeMode() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "key",
+            openFoodFactsEnabled = true,
+            safeModeEnabled = true
+        )
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.BARCODE, viewModel.uiState.value.mode)
+        assertTrue(viewModel.uiState.value.barcodeAvailability is BarcodeLookupAvailability.SafeMode)
+    }
+
+    @Test
+    fun barcodeMode_selectableWhenOffDisabled() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "key",
+            openFoodFactsEnabled = false
+        )
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+
+        assertEquals(SmartFoodEntryMode.BARCODE, viewModel.uiState.value.mode)
+        assertTrue(viewModel.uiState.value.barcodeAvailability is BarcodeLookupAvailability.OpenFoodFactsDisabled)
+    }
+
+    @Test
+    fun selectingUnavailableBarcodeMode_performsZeroLookup() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "",
+            openFoodFactsEnabled = true
+        )
+        advanceUntilIdle()
+
+        viewModel.onBarcodeModeSelected()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.barcodeAvailability !is BarcodeLookupAvailability.Available)
+
+        viewModel.onBarcodeTextChange("0123456789012")
+        viewModel.submitBarcodeLookup()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isBarcodeSearching)
+        assertEquals(0, fakeClient.lookupBarcodeCallCount)
+    }
+
+    @Test
+    fun selectingUnavailableOnlineMode_performsZeroSearch() = runTest {
+        settingsFlow.value = OnlineAssistanceSettings(
+            onlineFoodLookupEnabled = true,
+            foodLookupApiKey = "",
+            usdaEnabled = true
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleOnlineMode(true)
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.onlineAvailability !is OnlineSearchAvailability.Available)
+
+        viewModel.onOnlineQueryChange("egg")
+        viewModel.submitOnlineSearch()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isOnlineSearching)
+        assertEquals(0, fakeClient.searchGenericCallCount)
+    }
+
     // --- Helpers ---
 
     private fun enabledConfig() = FoodLookupConfigDto(
@@ -626,6 +1161,40 @@ class SmartFoodEntryViewModelRemoteTest {
             proteinG = 12.6,
             carbohydrateG = 0.7,
             fatG = 9.5
+        )
+    )
+
+    private fun barcodeSettings() = OnlineAssistanceSettings(
+        onlineFoodLookupEnabled = true,
+        foodLookupApiKey = "key",
+        usdaEnabled = true,
+        openFoodFactsEnabled = true,
+        safeModeEnabled = false
+    )
+
+    private fun barcodeConfig() = FoodLookupConfigDto(
+        onlineLookupAvailable = true,
+        providers = ProvidersDto(usda = true, openFoodFacts = true),
+        features = FeaturesDto(genericFoodSearch = true, barcodeLookup = true),
+        minQueryLength = 3,
+        safeMode = false
+    )
+
+    private fun packagedDto(
+        name: String = "Hazelnut spread",
+        caloriesKcal: Double? = 544.0,
+        proteinG: Double? = 4.0,
+        carbohydrateG: Double? = 57.0,
+        fatG: Double? = 32.0
+    ) = PackagedFoodLookupDataDto(
+        barcode = "0123456789012",
+        source = "OPEN_FOOD_FACTS",
+        attribution = "Open Food Facts — ODbL",
+        isApproximate = true,
+        product = PackagedFoodProductDto(
+            externalId = "0123456789012",
+            name = name,
+            nutritionPer100g = PackagedNutritionDto(caloriesKcal, proteinG, carbohydrateG, fatG)
         )
     )
 
@@ -677,9 +1246,13 @@ class SmartFoodEntryViewModelRemoteTest {
         var searchResult: FoodLookupOutcome<GenericLookupDataDto> = FoodLookupOutcome.Success(GenericLookupDataDto())
         var configGate: CompletableDeferred<Unit>? = null
         var searchGate: CompletableDeferred<Unit>? = null
+        var barcodeGate: CompletableDeferred<Unit>? = null
         var fetchConfigCallCount = 0
             private set
         var searchGenericCallCount = 0
+            private set
+        var barcodeResult: FoodLookupOutcome<PackagedFoodLookupDataDto> = FoodLookupOutcome.Empty
+        var lookupBarcodeCallCount = 0
             private set
 
         override suspend fun fetchConfig(baseUrl: String): FoodLookupOutcome<FoodLookupConfigDto> {
@@ -696,6 +1269,16 @@ class SmartFoodEntryViewModelRemoteTest {
             searchGenericCallCount++
             searchGate?.await()
             return searchResult
+        }
+
+        override suspend fun lookupBarcode(
+            baseUrl: String,
+            apiKey: String,
+            barcode: String
+        ): FoodLookupOutcome<PackagedFoodLookupDataDto> {
+            lookupBarcodeCallCount++
+            barcodeGate?.await()
+            return barcodeResult
         }
     }
 

@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.edu.gymledger.data.remote.FoodLookupError
 import com.edu.gymledger.data.remote.FoodLookupOutcome
+import com.edu.gymledger.data.remote.BarcodeValidator
+import com.edu.gymledger.data.repository.lookup.BarcodeLookupAvailability
 import com.edu.gymledger.data.repository.FoodReferenceRepository
 import com.edu.gymledger.data.repository.FoodRepository
 import com.edu.gymledger.data.repository.OnlineAssistanceSettings
@@ -12,6 +14,8 @@ import com.edu.gymledger.data.repository.lookup.RemoteFoodLookupRepository
 import com.edu.gymledger.domain.model.FoodReference
 import com.edu.gymledger.domain.model.FoodReferenceCalculator
 import com.edu.gymledger.domain.model.lookup.RemoteFoodLookupResult
+import com.edu.gymledger.domain.model.lookup.RemotePackagedFoodResult
+import com.edu.gymledger.domain.model.lookup.PackagedFoodReferenceMapper.toFoodReferenceOrNull
 import com.edu.gymledger.domain.model.lookup.RemoteFoodReferenceMapper.toFoodReference
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -25,6 +29,7 @@ import kotlinx.coroutines.launch
 
 sealed interface SmartFoodEntryEvent {
     data object SaveSucceeded : SmartFoodEntryEvent
+    data object CreateManually : SmartFoodEntryEvent
     data class Error(val message: String) : SmartFoodEntryEvent
 }
 
@@ -42,7 +47,7 @@ data class SmartFoodEntryUiState(
     val isSaving: Boolean = false,
     val saveSucceeded: Boolean = false,
     val isOnlineAvailable: Boolean = false,
-    val onlineMode: Boolean = false,
+    val mode: SmartFoodEntryMode = SmartFoodEntryMode.LOCAL,
     val onlineResults: List<RemoteFoodLookupResult> = emptyList(),
     val isOnlineSearching: Boolean = false,
     val isCheckingOnlineAvailability: Boolean = false,
@@ -50,8 +55,17 @@ data class SmartFoodEntryUiState(
     val onlineError: String? = null,
     val onlineAvailability: OnlineSearchAvailability = OnlineSearchAvailability.Disabled,
     val onlineQuery: String = "",
-    val minQueryLength: Int = 3
+    val minQueryLength: Int = 3,
+    val barcodeText: String = "",
+    val barcodeResult: RemotePackagedFoodResult? = null,
+    val isBarcodeSearching: Boolean = false,
+    val hasSubmittedBarcodeLookup: Boolean = false,
+    val barcodeError: String? = null,
+    val barcodeNotFound: Boolean = false,
+    val barcodeAvailability: BarcodeLookupAvailability = BarcodeLookupAvailability.Disabled
 )
+
+enum class SmartFoodEntryMode { LOCAL, ONLINE, BARCODE }
 
 class SmartFoodEntryViewModel(
     private val referenceRepository: FoodReferenceRepository,
@@ -85,10 +99,21 @@ class SmartFoodEntryViewModel(
 
     private fun updateOnlineAvailability(settings: OnlineAssistanceSettings) {
         val availability = remoteFoodLookupRepository.getEffectiveAvailability(settings, null)
+        val recomputedBarcodeAvailability = remoteFoodLookupRepository.getBarcodeAvailability(settings, null)
+        val confirmedBarcodeAvailability = _uiState.value.barcodeAvailability
+        val barcodeAvailability = if (
+            recomputedBarcodeAvailability is BarcodeLookupAvailability.RemoteDisabled &&
+            confirmedBarcodeAvailability is BarcodeLookupAvailability.Available
+        ) {
+            confirmedBarcodeAvailability
+        } else {
+            recomputedBarcodeAvailability
+        }
         _uiState.value = _uiState.value.copy(
             isOnlineAvailable = settings.onlineFoodLookupEnabled,
             onlineAvailability = availability,
-            onlineError = null
+            onlineError = null,
+            barcodeAvailability = barcodeAvailability
         )
     }
 
@@ -112,9 +137,9 @@ class SmartFoodEntryViewModel(
 
     fun toggleOnlineMode(enabled: Boolean) {
         val current = _uiState.value
-        if (enabled && !current.isOnlineAvailable) return
 
-        if (!enabled) {
+        val leavingBarcode = current.mode == SmartFoodEntryMode.BARCODE
+        if (!enabled || leavingBarcode) {
             searchJob?.cancel()
             searchJob = null
             configJob?.cancel()
@@ -122,12 +147,17 @@ class SmartFoodEntryViewModel(
         }
 
         _uiState.value = current.copy(
-            onlineMode = enabled,
+            mode = if (enabled) SmartFoodEntryMode.ONLINE else SmartFoodEntryMode.LOCAL,
             onlineResults = emptyList(),
             onlineError = null,
             isOnlineSearching = false,
             isCheckingOnlineAvailability = false,
-            hasSubmittedOnlineSearch = false
+            hasSubmittedOnlineSearch = false,
+            barcodeResult = if (leavingBarcode) null else current.barcodeResult,
+            barcodeError = if (leavingBarcode) null else current.barcodeError,
+            isBarcodeSearching = if (leavingBarcode) false else current.isBarcodeSearching,
+            hasSubmittedBarcodeLookup = if (leavingBarcode) false else current.hasSubmittedBarcodeLookup,
+            barcodeNotFound = if (leavingBarcode) false else current.barcodeNotFound
         )
 
         if (enabled) {
@@ -148,7 +178,7 @@ class SmartFoodEntryViewModel(
                     isCheckingOnlineAvailability = true
                 )
                 val config = remoteFoodLookupRepository.ensureConfig(settings)
-                if (!_uiState.value.onlineMode) return@launch
+                if (_uiState.value.mode != SmartFoodEntryMode.ONLINE) return@launch
 
                 val availability = remoteFoodLookupRepository.getEffectiveAvailability(settings, config)
                 _uiState.value = _uiState.value.copy(
@@ -158,6 +188,94 @@ class SmartFoodEntryViewModel(
                 )
             }
         }
+    }
+
+    fun onBarcodeModeSelected() {
+        val current = _uiState.value
+        searchJob?.cancel()
+        configJob?.cancel()
+        _uiState.value = current.copy(
+            mode = SmartFoodEntryMode.BARCODE,
+            onlineResults = emptyList(),
+            onlineError = null,
+            barcodeResult = null,
+            barcodeError = null,
+            isOnlineSearching = false,
+            isCheckingOnlineAvailability = false,
+            hasSubmittedBarcodeLookup = false
+        )
+        configJob = viewModelScope.launch {
+            val settings = settingsFlow.first()
+            if (_uiState.value.mode != SmartFoodEntryMode.BARCODE) return@launch
+            _uiState.value = _uiState.value.copy(isCheckingOnlineAvailability = true)
+            val config = remoteFoodLookupRepository.ensureConfig(settings)
+            val availability = remoteFoodLookupRepository.getBarcodeAvailability(settings, config)
+            _uiState.value = _uiState.value.copy(
+                barcodeAvailability = availability,
+                isCheckingOnlineAvailability = false
+            )
+        }
+    }
+
+    fun onBarcodeTextChange(text: String) {
+        _uiState.value = _uiState.value.copy(
+            barcodeText = text,
+            barcodeResult = null,
+            barcodeError = null,
+            hasSubmittedBarcodeLookup = false,
+            barcodeNotFound = false
+        )
+    }
+
+    fun submitBarcodeLookup() {
+        val state = _uiState.value
+        if (state.isBarcodeSearching || state.mode != SmartFoodEntryMode.BARCODE) return
+        if (state.barcodeAvailability !is BarcodeLookupAvailability.Available) return
+        val barcode = BarcodeValidator.normalize(state.barcodeText)
+        if (barcode == null) {
+            _uiState.value = state.copy(
+                hasSubmittedBarcodeLookup = true,
+                barcodeError = "Enter an 8, 12, 13, or 14-digit barcode."
+            )
+            return
+        }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isBarcodeSearching = true,
+                hasSubmittedBarcodeLookup = true,
+                barcodeError = null,
+                barcodeResult = null,
+                barcodeNotFound = false
+            )
+            val result = remoteFoodLookupRepository.lookupBarcode(settingsFlow.first(), barcode)
+            if (_uiState.value.mode != SmartFoodEntryMode.BARCODE) return@launch
+            when (result) {
+                is FoodLookupOutcome.Success -> _uiState.value = _uiState.value.copy(
+                    barcodeText = barcode,
+                    barcodeResult = result.data,
+                    isBarcodeSearching = false
+                )
+                is FoodLookupOutcome.Empty -> _uiState.value = _uiState.value.copy(
+                    isBarcodeSearching = false,
+                    barcodeNotFound = true,
+                    barcodeError = "No product found for this barcode."
+                )
+                is FoodLookupOutcome.Error -> _uiState.value = _uiState.value.copy(
+                    isBarcodeSearching = false,
+                    barcodeNotFound = false,
+                    barcodeError = errorMessageFor(result.reason)
+                )
+            }
+        }
+    }
+
+    fun useBarcodeProduct() {
+        _uiState.value.barcodeResult?.toFoodReferenceOrNull()?.let(::selectReference)
+    }
+
+    fun createManuallyFromBarcode() {
+        _events.trySend(SmartFoodEntryEvent.CreateManually)
     }
 
     fun onOnlineQueryChange(query: String) {
@@ -172,7 +290,7 @@ class SmartFoodEntryViewModel(
     fun submitOnlineSearch() {
         val state = _uiState.value
         if (state.isOnlineSearching) return
-        if (!state.onlineMode) return
+        if (state.mode != SmartFoodEntryMode.ONLINE) return
         if (state.onlineAvailability !is OnlineSearchAvailability.Available) return
 
         val query = state.onlineQuery.trim()
@@ -426,7 +544,8 @@ class SmartFoodEntryViewModel(
         configJob = null
         _uiState.value = _uiState.value.copy(
             isOnlineSearching = false,
-            isCheckingOnlineAvailability = false
+            isCheckingOnlineAvailability = false,
+            isBarcodeSearching = false
         )
     }
 
@@ -435,6 +554,7 @@ class SmartFoodEntryViewModel(
             FoodLookupError.Transport -> "Couldn't reach the lookup service. Check your connection and try again."
             FoodLookupError.Unauthorized -> "Online lookup isn't configured. Add an API key in Settings."
             FoodLookupError.InvalidQuery -> "Enter a longer search term."
+            FoodLookupError.InvalidBarcode -> "Enter a valid barcode."
             FoodLookupError.BudgetExceeded -> "Daily lookup limit reached. Try again tomorrow or add the food manually."
             FoodLookupError.LookupDisabled -> "Online lookup is temporarily disabled."
             FoodLookupError.ProviderDisabled -> "Online lookup is temporarily unavailable."
@@ -471,7 +591,7 @@ class SmartFoodEntryViewModel(
         return formatDouble(grams)
     }
 
-    private fun formatDouble(value: Double): String {
+    fun formatDouble(value: Double): String {
         return if (value == value.toLong().toDouble()) {
             value.toLong().toString()
         } else {
@@ -479,7 +599,7 @@ class SmartFoodEntryViewModel(
         }
     }
 
-    private fun formatMacro(value: Double): String {
+    fun formatMacro(value: Double): String {
         return if (value == value.toLong().toDouble()) {
             value.toLong().toString()
         } else {

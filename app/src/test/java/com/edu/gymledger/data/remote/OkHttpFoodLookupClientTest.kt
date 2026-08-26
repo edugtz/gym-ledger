@@ -12,6 +12,7 @@ import okhttp3.ResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -116,6 +117,57 @@ class OkHttpFoodLookupClientTest {
                 "attribution": "USDA FoodData Central",
                 "isApproximate": true,
                 "results": []
+            }
+        }
+    """.trimIndent()
+
+    private val successBarcodeBody = """
+        {
+            "ok": true,
+            "data": {
+                "barcode": "0123456789012",
+                "source": "OPEN_FOOD_FACTS",
+                "attribution": "Open Food Facts — ODbL",
+                "isApproximate": true,
+                "product": {
+                    "externalId": "0123456789012",
+                    "name": "Hazelnut spread",
+                    "genericName": "Spread",
+                    "brands": ["BrandA"],
+                    "quantity": "450 g",
+                    "servingSize": "20 g",
+                    "nutritionPer100g": {
+                        "caloriesKcal": 544.0,
+                        "proteinG": 4.0,
+                        "carbohydrateG": 57.0,
+                        "fatG": 32.0
+                    }
+                }
+            }
+        }
+    """.trimIndent()
+
+    private val incompleteBarcodeBody = """
+        {
+            "ok": true,
+            "data": {
+                "barcode": "1234567890123",
+                "source": "OPEN_FOOD_FACTS",
+                "attribution": "Open Food Facts — ODbL",
+                "isApproximate": false,
+                "product": {
+                    "externalId": "1234567890123",
+                    "name": "Mystery product",
+                    "brands": [],
+                    "quantity": null,
+                    "servingSize": null,
+                    "nutritionPer100g": {
+                        "caloriesKcal": 200.0,
+                        "proteinG": null,
+                        "carbohydrateG": 40.0,
+                        "fatG": null
+                    }
+                }
             }
         }
     """.trimIndent()
@@ -652,6 +704,272 @@ class OkHttpFoodLookupClientTest {
         assertEquals(12.6, item.nutritionPer100g.proteinG!!, 0.001)
         assertEquals(0.7, item.nutritionPer100g.carbohydrateG!!, 0.001)
         assertEquals(9.5, item.nutritionPer100g.fatG!!, 0.001)
+    }
+
+    // --- Barcode lookup tests ---
+
+    @Test
+    fun lookupBarcode_correctRoute_pathSegmentWithLeadingZero_andKeyHeader() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, successBarcodeBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "test-api-key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        assertEquals("GET", fakeCall.capturedRequest!!.method)
+        assertTrue(fakeCall.capturedRequest!!.url.encodedPath.endsWith("/v1/foods/barcode/0123456789012"))
+        assertEquals("test-api-key", fakeCall.capturedRequest!!.header("X-GymLedger-Key"))
+        assertEquals("0123456789012", (result as FoodLookupOutcome.Success).data.barcode)
+    }
+
+    @Test
+    fun lookupBarcode_completeProduct_fullDtoDecoded() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, successBarcodeBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val data = (result as FoodLookupOutcome.Success).data
+        assertEquals("OPEN_FOOD_FACTS", data.source)
+        assertEquals("Open Food Facts — ODbL", data.attribution)
+        assertTrue(data.isApproximate)
+        assertEquals("0123456789012", data.product.externalId)
+        assertEquals("Hazelnut spread", data.product.name)
+        assertEquals(listOf("BrandA"), data.product.brands)
+        assertEquals("450 g", data.product.quantity)
+        assertEquals("20 g", data.product.servingSize)
+        assertEquals(544.0, data.product.nutritionPer100g.caloriesKcal!!, 0.001)
+        assertEquals(4.0, data.product.nutritionPer100g.proteinG!!, 0.001)
+        assertEquals(57.0, data.product.nutritionPer100g.carbohydrateG!!, 0.001)
+        assertEquals(32.0, data.product.nutritionPer100g.fatG!!, 0.001)
+    }
+
+    @Test
+    fun lookupBarcode_incompleteNutrition_nullsPreserved() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, incompleteBarcodeBody)
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "1234567890123")
+
+        assertTrue(result is FoodLookupOutcome.Success)
+        val product = (result as FoodLookupOutcome.Success).data.product
+        assertEquals("Mystery product", product.name)
+        assertEquals(200.0, product.nutritionPer100g.caloriesKcal!!, 0.001)
+        assertNull(product.nutritionPer100g.proteinG)
+        assertEquals(40.0, product.nutritionPer100g.carbohydrateG!!, 0.001)
+        assertNull(product.nutritionPer100g.fatG)
+        assertNull(product.quantity)
+        assertNull(product.servingSize)
+    }
+
+    @Test
+    fun lookupBarcode_notFound_returnsEmpty() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(404, errorBody("not_found"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0000000000000")
+
+        assertTrue(result is FoodLookupOutcome.Empty)
+    }
+
+    @Test
+    fun lookupBarcode_invalidBarcodeCode_mapsInvalidBarcode() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(400, errorBody("invalid_barcode"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "1234")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.InvalidBarcode, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_unauthorizedCode_mapsUnauthorized() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(401, errorBody("unauthorized"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.Unauthorized, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_lookupDisabledCode_mapsLookupDisabled() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("lookup_disabled"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.LookupDisabled, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_providerDisabledCode_mapsProviderDisabled() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("provider_disabled"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ProviderDisabled, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_featureDisabledCode_mapsFeatureDisabled() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("feature_disabled"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.FeatureDisabled, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_budgetExceededCode_mapsBudgetExceeded() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(429, errorBody("budget_exceeded"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.BudgetExceeded, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_configurationErrorCode_mapsConfigurationError() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("configuration_error"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ConfigurationError, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_providerErrorCode_mapsProviderError() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(503, errorBody("provider_error"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.ProviderError, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_providerTimeoutCode_mapsTransport() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(504, errorBody("provider_timeout"))
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.Transport, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_nonJsonSuccessBody_returnsMalformed() = runTest {
+        val fakeCall = FakeCall(
+            response = jsonResponse(200, "not json {{{")
+        )
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_typeMismatchedNutrient_returnsMalformed() = runTest {
+        val body = """
+            {
+                "ok": true,
+                "data": {
+                    "barcode": "0123456789012",
+                    "product": {
+                        "externalId": "0123456789012",
+                        "name": "Hazelnut spread",
+                        "nutritionPer100g": { "caloriesKcal": "high" }
+                    }
+                }
+            }
+        """.trimIndent()
+        val fakeCall = FakeCall(response = jsonResponse(200, body))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_okFalseOn200_returnsMalformed() = runTest {
+        val body = """{"ok": false, "error": {"code": "not_found", "message": "Not found"}}"""
+        val fakeCall = FakeCall(response = jsonResponse(200, body))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Error)
+        assertEquals(FoodLookupError.MalformedResponse, (result as FoodLookupOutcome.Error).reason)
+    }
+
+    @Test
+    fun lookupBarcode_okTrueMissingData_returnsEmpty() = runTest {
+        val fakeCall = FakeCall(response = jsonResponse(200, """{"ok": true}"""))
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val result = client.lookupBarcode("https://example.com/", "key", "0123456789012")
+
+        assertTrue(result is FoodLookupOutcome.Empty)
+    }
+
+    @Test
+    fun lookupBarcode_cancellation_cancelsCall() = runTest {
+        val fakeCall = FakeCall()
+        val client = OkHttpFoodLookupClient(FakeCallFactory(fakeCall))
+
+        val job = launch {
+            client.lookupBarcode("https://example.com/", "key", "0123456789012")
+        }
+        testScheduler.advanceTimeBy(1)
+        job.cancel()
+        job.join()
+
+        assertTrue(fakeCall.isCancelled)
     }
 
     // --- Test helpers ---
