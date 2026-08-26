@@ -1,4 +1,5 @@
 import type { PackagedFoodProduct, NutritionValues } from "../types/packagedFoodLookup";
+import { areGtinEquivalent } from "../barcode";
 
 interface OffNutrient {
   source_per?: string;
@@ -8,6 +9,7 @@ interface OffNutrient {
 
 interface OffNutrition {
   aggregated_set?: {
+    per?: string;
     nutrients?: Record<string, OffNutrient>;
   };
 }
@@ -23,8 +25,8 @@ interface OffProduct {
   nutrition?: OffNutrition;
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && isFinite(value);
+function isValidNutrientValue(value: unknown): value is number {
+  return typeof value === "number" && isFinite(value) && value >= 0;
 }
 
 function toStringOrNull(value: unknown): string | null {
@@ -35,28 +37,15 @@ function toStringOrNull(value: unknown): string | null {
   return null;
 }
 
-function extractNutrient(
+function extractAggregatedValue(
   nutrients: Record<string, OffNutrient> | undefined,
-  key: string,
-  sourcePer: string
+  key: string
 ): number | null {
   if (!nutrients) return null;
   const n = nutrients[key];
-  if (!n || n.source_per !== sourcePer) return null;
-  if (!isFiniteNumber(n.value)) return null;
+  if (!n) return null;
+  if (!isValidNutrientValue(n.value)) return null;
   return n.value;
-}
-
-function normalizeNutrition(
-  nutrients: Record<string, OffNutrient> | undefined,
-  sourcePer: string
-): NutritionValues {
-  return {
-    caloriesKcal: extractNutrient(nutrients, "energy-kcal", sourcePer),
-    proteinG: extractNutrient(nutrients, "proteins", sourcePer),
-    carbohydrateG: extractNutrient(nutrients, "carbohydrates", sourcePer),
-    fatG: extractNutrient(nutrients, "fat", sourcePer),
-  };
 }
 
 function normalizeBrands(product: OffProduct): string[] {
@@ -115,7 +104,7 @@ export function normalizeOpenFoodFactsProduct(
   const p = product as OffProduct;
 
   const code = toStringOrNull(p.code);
-  if (code && code !== requestedBarcode) {
+  if (code !== null && !areGtinEquivalent(code, requestedBarcode)) {
     return null;
   }
 
@@ -125,9 +114,38 @@ export function normalizeOpenFoodFactsProduct(
   const quantity = toStringOrNull(p.quantity);
   const servingSize = toStringOrNull(p.serving_size);
 
-  const nutrients = p.nutrition?.aggregated_set?.nutrients;
-  const nutritionPer100g = normalizeNutrition(nutrients, "100g");
-  const nutritionPerServing = normalizeNutrition(nutrients, "serving");
+  const aggregatedSet = p.nutrition?.aggregated_set;
+  const per =
+    typeof aggregatedSet?.per === "string" ? aggregatedSet.per : undefined;
+  const nutrients = aggregatedSet?.nutrients;
+
+  const nutritionPer100g: NutritionValues =
+    per === "100g"
+      ? {
+          caloriesKcal: extractAggregatedValue(nutrients, "energy-kcal"),
+          proteinG: extractAggregatedValue(nutrients, "proteins"),
+          carbohydrateG: extractAggregatedValue(nutrients, "carbohydrates"),
+          fatG: extractAggregatedValue(nutrients, "fat"),
+        }
+      : {
+          caloriesKcal: null,
+          proteinG: null,
+          carbohydrateG: null,
+          fatG: null,
+        };
+
+  // aggregated_set.per controls aggregate semantics. The aggregate values are
+  // already normalized to the per basis (e.g. "100g"); they must NOT be
+  // re-interpreted as serving values. We therefore do NOT derive
+  // nutritionPerServing from aggregated_set.source_per. There is no separate
+  // already-supported structure whose values are explicitly serving-valued, so
+  // nutritionPerServing is left null (no fabricated serving nutrition).
+  const nutritionPerServing: NutritionValues = {
+    caloriesKcal: null,
+    proteinG: null,
+    carbohydrateG: null,
+    fatG: null,
+  };
 
   return {
     externalId: requestedBarcode,

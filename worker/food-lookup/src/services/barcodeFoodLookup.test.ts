@@ -750,4 +750,43 @@ describe("handleBarcodeFoodLookup", () => {
       expect(cachedJson).not.toContain("source_per");
     });
   });
+
+  describe("end-to-end barcode preservation (Issue 2)", () => {
+    it("preserves requested barcode when provider returns zero-prefixed equivalent code with success_with_warnings", async () => {
+      const { env, mockPrepare } = createMockEnv();
+      setupCacheMiss(mockPrepare, enabledRuntimeValues);
+      const product = {
+        code: "0810104461665",
+        product_name: "Magic Spoon",
+        nutrition: {
+          aggregated_set: {
+            per: "100g",
+            nutrients: {
+              "energy-kcal": { source_per: "serving", unit: "kcal", value: 400 },
+              proteins: { source_per: "serving", unit: "g", value: 20 },
+              carbohydrates: { source_per: "serving", unit: "g", value: 30 },
+              fat: { source_per: "serving", unit: "g", value: 15 },
+            },
+          },
+        },
+      };
+      const providerFn = vi.fn().mockResolvedValue({
+        kind: "success" as const,
+        payload: product,
+      });
+
+      const result = await handleBarcodeFoodLookup({
+        env,
+        barcode: "810104461665",
+        today,
+        providerFn,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.response.barcode).toBe("810104461665");
+        expect(result.response.product.externalId).toBe("810104461665");
+        expect(result.response.product.nutritionPer100g.caloriesKcal).toBe(400);
+      }
+    });
+  });
 });

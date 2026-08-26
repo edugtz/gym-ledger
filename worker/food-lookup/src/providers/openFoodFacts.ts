@@ -94,10 +94,9 @@ export async function fetchOpenFoodFactsProduct(
 
   const obj = parsed as Record<string, unknown>;
 
-  if (obj.status !== "success") {
-    return { kind: "unexpected", detail: "non_success_status" };
-  }
-
+  // Validate result/result.id before gating on status so the real OFF v3
+  // not-found shape (status: "failure", result.id: "product_not_found")
+  // maps to not_found instead of unexpected.
   if (
     obj.result === null ||
     typeof obj.result !== "object" ||
@@ -111,8 +110,24 @@ export async function fetchOpenFoodFactsProduct(
     return { kind: "unexpected", detail: "missing_or_invalid_result_id" };
   }
 
+  if (result.id === "product_not_found") {
+    return { kind: "not_found" };
+  }
+
   if (result.id !== "product_found") {
     return { kind: "unexpected", detail: "unknown_result_id" };
+  }
+
+  // product_found is only accepted with an explicitly success status.
+  // failure + product_found must remain unexpected.
+  const status = obj.status;
+  if (status !== "success" && status !== "success_with_warnings") {
+    return { kind: "unexpected", detail: "non_success_status" };
+  }
+
+  // success_with_warnings carries warnings, not fatal errors.
+  if (Array.isArray(obj.errors) && obj.errors.length > 0) {
+    return { kind: "unexpected", detail: "non_empty_errors" };
   }
 
   if (
