@@ -1239,6 +1239,59 @@ class SmartFoodEntryViewModelRemoteTest {
                 }
             }
         }
+
+        override fun listAllRanked(): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = kotlinx.coroutines.flow.flow {
+            listAllFlow.collect { items -> emit(rankFoods(items)) }
+        }
+
+        override fun searchRanked(query: String): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = kotlinx.coroutines.flow.flow {
+            listAllFlow.collect { items -> emit(rankFoods(items.filter { it.name.contains(query, ignoreCase = true) })) }
+        }
+
+        override fun listFavorites(): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = kotlinx.coroutines.flow.flow {
+            listAllFlow.collect { items -> emit(rankFoods(items.filter { it.isFavorite }).sortedWith(favoriteComparator)) }
+        }
+
+        override fun searchFavorites(query: String): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = kotlinx.coroutines.flow.flow {
+            listAllFlow.collect { items -> emit(rankFoods(items.filter { it.isFavorite && it.name.contains(query, ignoreCase = true) }).sortedWith(favoriteComparator)) }
+        }
+
+        override fun listRecent(): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = kotlinx.coroutines.flow.flow {
+            listAllFlow.collect { items -> emit(items.filter { it.lastUsedAt != null }.sortedWith(recentComparator)) }
+        }
+
+        override fun searchRecent(query: String): Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>> = kotlinx.coroutines.flow.flow {
+            listAllFlow.collect { items -> emit(items.filter { it.lastUsedAt != null && it.name.contains(query, ignoreCase = true) }.sortedWith(recentComparator)) }
+        }
+
+        override suspend fun setFavorite(foodId: Long, isFavorite: Boolean, favoriteAt: Long?) {
+            val idx = stored.indexOfFirst { it.id == foodId }
+            if (idx >= 0) {
+                stored[idx] = stored[idx].copy(isFavorite = isFavorite, favoriteAt = favoriteAt)
+                listAllFlow.value = stored.toList()
+            }
+        }
+
+        override suspend fun markUsed(foodId: Long, usedAtMillis: Long) {
+            val idx = stored.indexOfFirst { it.id == foodId }
+            if (idx >= 0) {
+                stored[idx] = stored[idx].copy(lastUsedAt = usedAtMillis)
+                listAllFlow.value = stored.toList()
+            }
+        }
+
+        private val recentComparator = compareByDescending<com.edu.gymledger.data.db.entity.FoodEntity> {
+            it.lastUsedAt ?: Long.MIN_VALUE
+        }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }.thenByDescending { it.id }
+
+        private val favoriteComparator = recentComparator
+
+        private fun rankFoods(items: List<com.edu.gymledger.data.db.entity.FoodEntity>) = items.sortedWith(
+            compareByDescending<com.edu.gymledger.data.db.entity.FoodEntity> { it.isFavorite }
+                .thenByDescending { it.lastUsedAt ?: Long.MIN_VALUE }
+                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+                .thenByDescending { it.id }
+        )
     }
 
     class FakeFoodLookupClient : FoodLookupClient {

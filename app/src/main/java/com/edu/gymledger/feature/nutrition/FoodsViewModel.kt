@@ -10,9 +10,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 sealed interface FoodsUiEvent {
     data object SaveSucceeded : FoodsUiEvent
@@ -24,13 +27,22 @@ data class FoodsUiState(
     val searchQuery: String = "",
     val foods: List<Food> = emptyList(),
     val isLoading: Boolean = true,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val activeFilter: FoodFilter = FoodFilter.ALL
 )
+
+enum class FoodFilter { ALL, FAVORITES, RECENT }
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class FoodsViewModel(
     private val repository: FoodRepository
 ) : ViewModel() {
+
+    private data class PendingFavorite(
+        val mutex: Mutex = Mutex(),
+        var nextValue: Boolean,
+        var users: Int = 0
+    )
 
     private val _uiState = MutableStateFlow(FoodsUiState())
     val uiState: StateFlow<FoodsUiState> = _uiState.asStateFlow()
@@ -39,15 +51,18 @@ class FoodsViewModel(
     val events = _events.receiveAsFlow()
 
     private val searchQuery = MutableStateFlow("")
+    private val activeFilter = MutableStateFlow(FoodFilter.ALL)
+    private val pendingFavorites = mutableMapOf<Long, PendingFavorite>()
 
     init {
         viewModelScope.launch {
-            searchQuery
-                .flatMapLatest { query ->
-                    val foodsFlow: Flow<List<Food>> = if (query.isBlank()) {
-                        repository.getAll()
-                    } else {
-                        repository.searchByName(query)
+            activeFilter
+                .combine(searchQuery) { filter, query -> filter to query }
+                .flatMapLatest { (filter, query) ->
+                    val foodsFlow: Flow<List<Food>> = when (filter) {
+                        FoodFilter.ALL -> if (query.isBlank()) repository.getAllRanked() else repository.searchRanked(query)
+                        FoodFilter.FAVORITES -> if (query.isBlank()) repository.getFavorites() else repository.searchFavorites(query)
+                        FoodFilter.RECENT -> if (query.isBlank()) repository.getRecent() else repository.searchRecent(query)
                     }
                     foodsFlow
                 }
@@ -65,6 +80,44 @@ class FoodsViewModel(
         _uiState.value = _uiState.value.copy(
             searchQuery = query
         )
+    }
+
+    fun setFilter(filter: FoodFilter) {
+        activeFilter.value = filter
+        searchQuery.value = ""
+        _uiState.value = _uiState.value.copy(
+            activeFilter = filter,
+            searchQuery = ""
+        )
+    }
+
+    fun toggleFavorite(food: Food) {
+        val pending = synchronized(pendingFavorites) {
+            pendingFavorites.getOrPut(food.id) { PendingFavorite(nextValue = food.isFavorite) }
+                .also { it.users++ }
+        }
+        viewModelScope.launch {
+            try {
+                pending.mutex.withLock {
+                    val target = !pending.nextValue
+                    repository.setFavorite(food.id, target)
+                    pending.nextValue = target
+                }
+            } catch (e: Exception) {
+                _events.trySend(FoodsUiEvent.Error(e.message ?: "Failed to update favorite."))
+            } finally {
+                pending.mutex.withLock {
+                    pending.users--
+                    if (pending.users == 0) {
+                        synchronized(pendingFavorites) {
+                            if (pendingFavorites[food.id] === pending) {
+                                pendingFavorites.remove(food.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun addFood(

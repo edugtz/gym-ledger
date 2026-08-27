@@ -67,6 +67,15 @@ class FoodRepositoryTest {
         assertEquals("Banana", food.name)
     }
 
+    @Test
+    fun create_defaultsFavoriteAndUsageMetadata() = runTest {
+        val food = repository.create(name = "Plain rice", caloriesPerServing = 130)
+
+        assertFalse(food.isFavorite)
+        assertNull(food.favoriteAt)
+        assertNull(food.lastUsedAt)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun create_blankName_throws() = runTest {
         repository.create(
@@ -315,6 +324,52 @@ class FoodRepositoryTest {
         val results = repository.searchByName("   ").first()
 
         assertEquals(2, results.size)
+    }
+
+    @Test
+    fun rankedFiltersAndExplicitSetters_preserveLocalState() = runTest {
+        val older = repository.create(name = "Banana", caloriesPerServing = 89)
+        val newer = repository.create(name = "Apple", caloriesPerServing = 52)
+
+        repository.setFavorite(older.id, true, 100L)
+        repository.markUsed(newer.id, 200L)
+
+        assertEquals(listOf("Banana", "Apple"), repository.getAllRanked().first().map { it.name })
+        assertEquals(listOf("Banana"), repository.getFavorites().first().map { it.name })
+        assertEquals(listOf("Apple"), repository.getRecent().first().map { it.name })
+        assertEquals(200L, repository.getById(newer.id)!!.lastUsedAt)
+    }
+
+    @Test
+    fun favoriteTimestamps_areAssignedClearedAndIndependentFromUsage() = runTest {
+        val older = repository.create(name = "Older", caloriesPerServing = 1)
+        val newer = repository.create(name = "Newer", caloriesPerServing = 1)
+
+        repository.setFavorite(older.id, true, 100L)
+        repository.setFavorite(newer.id, true, 200L)
+        assertEquals(listOf("Newer", "Older"), repository.getFavorites().first().map { it.name })
+
+        repository.markUsed(newer.id, 300L)
+        assertEquals(200L, repository.getById(newer.id)!!.favoriteAt)
+        assertEquals(listOf("Newer"), repository.getRecent().first().map { it.name })
+
+        repository.setFavorite(newer.id, false, 400L)
+        assertEquals(null, repository.getById(newer.id)!!.favoriteAt)
+        repository.setFavorite(newer.id, true, 500L)
+        assertEquals(listOf("Newer", "Older"), repository.getFavorites().first().map { it.name })
+    }
+
+    @Test
+    fun update_preservesFavoriteUsageAndFavoriteTimestamps() = runTest {
+        val created = repository.create(name = "Rice", caloriesPerServing = 130)
+        val marked = created.copy(isFavorite = true, lastUsedAt = 42L, favoriteAt = 99L)
+
+        val updated = repository.update(marked.copy(name = "  Brown Rice  "))
+
+        assertTrue(updated.isFavorite)
+        assertEquals(42L, updated.lastUsedAt)
+        assertEquals(99L, updated.favoriteAt)
+        assertEquals("Brown Rice", updated.name)
     }
 
     @Test
