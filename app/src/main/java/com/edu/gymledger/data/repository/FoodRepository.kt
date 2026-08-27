@@ -32,6 +32,30 @@ class FoodRepository(
         }
     }
 
+    fun getAllRanked(): Flow<List<Food>> = foodDao.listAllRanked().asFoods()
+
+    fun searchRanked(query: String): Flow<List<Food>> = foodDao.searchRanked(query.trim()).asFoods()
+
+    fun getFavorites(): Flow<List<Food>> = foodDao.listFavorites().asFoods()
+
+    fun searchFavorites(query: String): Flow<List<Food>> = foodDao.searchFavorites(query.trim()).asFoods()
+
+    fun getRecent(): Flow<List<Food>> = foodDao.listRecent().asFoods()
+
+    fun searchRecent(query: String): Flow<List<Food>> = foodDao.searchRecent(query.trim()).asFoods()
+
+    suspend fun setFavorite(
+        foodId: Long,
+        isFavorite: Boolean,
+        favoriteAtMillis: Long = System.currentTimeMillis()
+    ) {
+        foodDao.setFavorite(foodId, isFavorite, favoriteAtMillis.takeIf { isFavorite })
+    }
+
+    suspend fun markUsed(foodId: Long, usedAtMillis: Long = System.currentTimeMillis()) {
+        foodDao.markUsed(foodId, usedAtMillis)
+    }
+
     suspend fun create(
         name: String,
         caloriesPerServing: Int,
@@ -89,4 +113,7 @@ class FoodRepository(
     suspend fun delete(food: Food) {
         foodDao.delete(food.toEntity())
     }
+
+    private fun Flow<List<com.edu.gymledger.data.db.entity.FoodEntity>>.asFoods(): Flow<List<Food>> =
+        map { entities -> entities.map { Food.from(it) } }
 }

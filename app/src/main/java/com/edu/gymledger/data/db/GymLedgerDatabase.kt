@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.edu.gymledger.data.db.dao.*
 import com.edu.gymledger.data.db.entity.*
 
@@ -20,7 +22,7 @@ import com.edu.gymledger.data.db.entity.*
         MealItemEntity::class,
         BodyMeasurementEntity::class
     ],
-    version = 6,
+    version = 8,
     exportSchema = false
 )
 abstract class GymLedgerDatabase : RoomDatabase() {
@@ -46,7 +48,7 @@ abstract class GymLedgerDatabase : RoomDatabase() {
                     GymLedgerDatabase::class.java,
                     "gym_ledger_database"
                 )
-                    .fallbackToDestructiveMigration()
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
                     .build()
                 INSTANCE = instance
                 instance
@@ -55,6 +57,19 @@ abstract class GymLedgerDatabase : RoomDatabase() {
 
         fun getInstance(): GymLedgerDatabase? {
             return INSTANCE
+        }
+
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE foods ADD COLUMN isFavorite INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE foods ADD COLUMN lastUsedAt INTEGER DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE foods ADD COLUMN favoriteAt INTEGER DEFAULT NULL")
+            }
         }
     }
 }

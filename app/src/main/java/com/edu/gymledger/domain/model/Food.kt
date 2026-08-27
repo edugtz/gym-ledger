@@ -8,6 +8,10 @@ data class Food(
     val proteinPerServing: Double = 0.0,
     val carbsPerServing: Double = 0.0,
     val fatPerServing: Double = 0.0
+    ,
+    val isFavorite: Boolean = false,
+    val lastUsedAt: Long? = null,
+    val favoriteAt: Long? = null
 ) {
     fun toEntity(): com.edu.gymledger.data.db.entity.FoodEntity {
         return com.edu.gymledger.data.db.entity.FoodEntity(
@@ -18,6 +22,9 @@ data class Food(
             proteinPerServing = proteinPerServing,
             carbsPerServing = carbsPerServing,
             fatPerServing = fatPerServing
+            ,isFavorite = isFavorite,
+            lastUsedAt = lastUsedAt,
+            favoriteAt = favoriteAt
         )
     }
 
@@ -31,6 +38,9 @@ data class Food(
                 proteinPerServing = entity.proteinPerServing,
                 carbsPerServing = entity.carbsPerServing,
                 fatPerServing = entity.fatPerServing
+                ,isFavorite = entity.isFavorite,
+                lastUsedAt = entity.lastUsedAt,
+                favoriteAt = entity.favoriteAt
             )
         }
     }

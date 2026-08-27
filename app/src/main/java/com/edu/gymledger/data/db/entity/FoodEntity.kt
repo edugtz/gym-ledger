@@ -17,4 +17,11 @@ data class FoodEntity(
     val carbsPerServing: Double = 0.0,
     @ColumnInfo(defaultValue = "0.0")
     val fatPerServing: Double = 0.0
+    ,
+    @ColumnInfo(defaultValue = "0")
+    val isFavorite: Boolean = false,
+    @ColumnInfo(defaultValue = "NULL")
+    val lastUsedAt: Long? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val favoriteAt: Long? = null
 )

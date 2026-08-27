@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,6 +28,8 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
@@ -36,6 +39,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,8 +51,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -71,7 +73,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.edu.gymledger.app.AppContainer
 import com.edu.gymledger.domain.model.Food
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun FoodFilter.label(): String = when (this) {
+    FoodFilter.ALL -> "All"
+    FoodFilter.FAVORITES -> "Favorites"
+    FoodFilter.RECENT -> "Recent"
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FoodsScreen(
     modifier: Modifier = Modifier,
@@ -106,14 +114,6 @@ fun FoodsScreen(
 
     Scaffold(
         modifier = modifier,
-        topBar = {
-            TopAppBar(
-                title = { Text("Foods") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
@@ -126,94 +126,48 @@ fun FoodsScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 112.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Saved foods for fast meal logging",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-
-            SmartEntryCard(
-                onClick = { showSmartSheet = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            )
-
-            SearchBar(
-                query = uiState.searchQuery,
-                onQueryChange = { viewModel.updateSearchQuery(it) },
-                onClear = { viewModel.updateSearchQuery("") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            FoodsSummary(
-                count = uiState.foods.size,
-                isSearching = uiState.searchQuery.isNotBlank(),
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            if (uiState.isLoading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Loading...",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Foods", style = MaterialTheme.typography.headlineMedium)
+                    Text("Saved foods for fast meal logging", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            } else if (uiState.foods.isEmpty() && uiState.searchQuery.isBlank()) {
-                EmptyFoodsState(
-                    modifier = Modifier.fillMaxSize(),
-                    onAddFood = {
-                        editingFood = null
-                        showBottomSheet = true
+            }
+            item { SmartEntryCard(onClick = { showSmartSheet = true }, modifier = Modifier.fillMaxWidth()) }
+            item {
+                FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FoodFilter.values().forEach { filter ->
+                        FilterChip(selected = uiState.activeFilter == filter, onClick = { viewModel.setFilter(filter) }, label = { Text(filter.label()) })
                     }
-                )
-            } else if (uiState.foods.isEmpty() && uiState.searchQuery.isNotBlank()) {
-                SearchEmptyState(
-                    query = uiState.searchQuery,
-                    modifier = Modifier.fillMaxSize(),
-                    onClearSearch = { viewModel.updateSearchQuery("") },
-                    onAddFood = {
-                        editingFood = null
-                        showBottomSheet = true
+                }
+            }
+            item {
+                SearchBar(query = uiState.searchQuery, onQueryChange = { viewModel.updateSearchQuery(it) }, onClear = { viewModel.updateSearchQuery("") }, modifier = Modifier.fillMaxWidth())
+            }
+            item { FoodsSummary(count = uiState.foods.size, isSearching = uiState.searchQuery.isNotBlank(), filter = uiState.activeFilter) }
+            when {
+                uiState.isLoading -> item {
+                    Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) { Text("Loading...", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                uiState.foods.isEmpty() && uiState.searchQuery.isBlank() -> item {
+                    if (uiState.activeFilter == FoodFilter.ALL) {
+                        EmptyFoodsState(Modifier.fillMaxWidth().height(360.dp), onAddFood = { editingFood = null; showBottomSheet = true })
+                    } else {
+                        FilterEmptyState(uiState.activeFilter, Modifier.fillMaxWidth().height(360.dp))
                     }
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(uiState.foods, key = { it.id }) { food ->
-                        FoodCard(
-                            food = food,
-                            onEdit = {
-                                editingFood = food
-                                showBottomSheet = true
-                            },
-                            onDelete = { deleteTarget = food }
-                        )
-                    }
-
-                    item {
-                        Spacer(Modifier.height(96.dp))
-                    }
+                }
+                uiState.foods.isEmpty() -> item {
+                    SearchEmptyState(uiState.searchQuery, Modifier.fillMaxWidth().height(360.dp), onClearSearch = { viewModel.updateSearchQuery("") }, onAddFood = { editingFood = null; showBottomSheet = true })
+                }
+                else -> items(uiState.foods, key = { it.id }) { food ->
+                    FoodCard(food = food, onEdit = { editingFood = food; showBottomSheet = true }, onDelete = { deleteTarget = food }, onToggleFavorite = { viewModel.toggleFavorite(food) })
                 }
             }
         }
@@ -327,12 +281,13 @@ private fun SearchBar(
 private fun FoodsSummary(
     count: Int,
     isSearching: Boolean,
+    filter: FoodFilter,
     modifier: Modifier = Modifier
 ) {
-    val text = if (isSearching) {
-        "$count food${if (count != 1) "s" else ""} found"
-    } else {
-        "$count food${if (count != 1) "s" else ""} saved"
+    val text = when (filter) {
+        FoodFilter.ALL -> if (isSearching) "$count food${if (count != 1) "s" else ""} found" else "$count food${if (count != 1) "s" else ""} saved"
+        FoodFilter.FAVORITES -> if (isSearching) "$count favorite${if (count != 1) "s" else ""} found" else "$count favorite food${if (count != 1) "s" else ""}"
+        FoodFilter.RECENT -> if (isSearching) "$count recent food${if (count != 1) "s" else ""} found" else "$count recent food${if (count != 1) "s" else ""}"
     }
 
     Text(
@@ -431,12 +386,37 @@ private fun SearchEmptyState(
     }
 }
 
+@Composable
+private fun FilterEmptyState(
+    filter: FoodFilter,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = when (filter) {
+                FoodFilter.FAVORITES -> "No favorites yet. Star foods you use often."
+                FoodFilter.RECENT -> "No recent foods yet. Foods appear here after you log them in meals."
+                FoodFilter.ALL -> "No foods yet"
+            },
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 32.dp)
+        )
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FoodCard(
     food: Food,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onToggleFavorite: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -467,6 +447,14 @@ private fun FoodCard(
                     )
                 }
                 Row {
+                    IconButton(onClick = onToggleFavorite) {
+                        Icon(
+                            imageVector = if (food.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = if (food.isFavorite) "Remove from favorites" else "Add to favorites",
+                            modifier = Modifier.size(20.dp),
+                            tint = if (food.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(onClick = onEdit) {
                         Icon(
                             Icons.Default.Edit,

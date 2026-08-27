@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -181,6 +182,75 @@ class FoodsViewModelTest {
         assertTrue(fakeDao.storedFoods().isEmpty())
     }
 
+    @Test
+    fun defaultFilter_isAllAndFilterResetsSearch() = runTest {
+        viewModel.updateSearchQuery("rice")
+        viewModel.setFilter(FoodFilter.FAVORITES)
+
+        assertEquals(FoodFilter.FAVORITES, viewModel.uiState.value.activeFilter)
+        assertEquals("", viewModel.uiState.value.searchQuery)
+    }
+
+    @Test
+    fun favoriteAndRecentFilters_usePersistedFlags() = runTest {
+        fakeDao.seed(
+            FoodEntity(id = 1, name = "Apple", caloriesPerServing = 1, isFavorite = true),
+            FoodEntity(id = 2, name = "Rice", caloriesPerServing = 1, lastUsedAt = 10L)
+        )
+
+        viewModel.setFilter(FoodFilter.FAVORITES)
+        advanceUntilIdle()
+        assertEquals(listOf("Apple"), viewModel.uiState.value.foods.map { it.name })
+
+        viewModel.setFilter(FoodFilter.RECENT)
+        advanceUntilIdle()
+        assertEquals(listOf("Rice"), viewModel.uiState.value.foods.map { it.name })
+    }
+
+    @Test
+    fun searchWithinFavorites_andRecent_keepsActiveFilterAndOrdering() = runTest {
+        fakeDao.seed(
+            FoodEntity(id = 1, name = "Oat bar", caloriesPerServing = 1, isFavorite = true, favoriteAt = 100),
+            FoodEntity(id = 2, name = "Oatmeal", caloriesPerServing = 1, isFavorite = true, favoriteAt = 200),
+            FoodEntity(id = 3, name = "Oat drink", caloriesPerServing = 1, lastUsedAt = 300, favoriteAt = 400)
+        )
+
+        viewModel.setFilter(FoodFilter.FAVORITES)
+        viewModel.updateSearchQuery("oat")
+        advanceUntilIdle()
+        assertEquals(listOf("Oatmeal", "Oat bar"), viewModel.uiState.value.foods.map { it.name })
+
+        viewModel.setFilter(FoodFilter.RECENT)
+        viewModel.updateSearchQuery("oat")
+        advanceUntilIdle()
+        assertEquals(listOf("Oat drink"), viewModel.uiState.value.foods.map { it.name })
+        assertEquals(FoodFilter.RECENT, viewModel.uiState.value.activeFilter)
+    }
+
+    @Test
+    fun toggleFavorite_setsDeterministicOppositeValue() = runTest {
+        val food = Food(id = 1, name = "Apple", caloriesPerServing = 1)
+        fakeDao.seed(food.toEntity())
+
+        viewModel.toggleFavorite(food)
+        advanceUntilIdle()
+
+        assertTrue(fakeDao.storedFoods().single().isFavorite)
+        assertFalse(fakeDao.storedFoods().single().lastUsedAt != null)
+    }
+
+    @Test
+    fun rapidFavoriteTaps_withSameStaleFoodInstance_applyBothTogglesInOrder() = runTest {
+        val food = Food(id = 1, name = "Apple", caloriesPerServing = 1)
+        fakeDao.seed(food.toEntity())
+
+        viewModel.toggleFavorite(food)
+        viewModel.toggleFavorite(food)
+        advanceUntilIdle()
+
+        assertFalse(fakeDao.storedFoods().single().isFavorite)
+    }
+
     // --- Handwritten fake ---
 
     class FakeFoodDao : FoodDao {
@@ -232,5 +302,64 @@ class FoodsViewModelTest {
                 emit(items.filter { it.name.lowercase().contains(lower) })
             }
         }
+
+        override fun listAllRanked(): Flow<List<FoodEntity>> = flow {
+            listAllFlow.collect { items -> emit(rankFoods(items)) }
+        }
+
+        override fun searchRanked(query: String): Flow<List<FoodEntity>> = flow {
+            listAllFlow.collect { items ->
+                emit(rankFoods(items.filter { it.name.contains(query, ignoreCase = true) }))
+            }
+        }
+
+        override fun listFavorites(): Flow<List<FoodEntity>> = flow {
+            listAllFlow.collect { items -> emit(rankFoods(items.filter { it.isFavorite }).sortedWith(favoriteComparator)) }
+        }
+
+        override fun searchFavorites(query: String): Flow<List<FoodEntity>> = flow {
+            listAllFlow.collect { items -> emit(rankFoods(items.filter { it.isFavorite && it.name.contains(query, ignoreCase = true) }).sortedWith(favoriteComparator)) }
+        }
+
+        override fun listRecent(): Flow<List<FoodEntity>> = flow {
+            listAllFlow.collect { items -> emit(items.filter { it.lastUsedAt != null }.sortedWith(recentComparator)) }
+        }
+
+        override fun searchRecent(query: String): Flow<List<FoodEntity>> = flow {
+            listAllFlow.collect { items -> emit(items.filter { it.lastUsedAt != null && it.name.contains(query, ignoreCase = true) }.sortedWith(recentComparator)) }
+        }
+
+        override suspend fun setFavorite(foodId: Long, isFavorite: Boolean, favoriteAt: Long?) {
+            val idx = stored.indexOfFirst { it.id == foodId }
+            if (idx >= 0) {
+                stored[idx] = stored[idx].copy(isFavorite = isFavorite, favoriteAt = favoriteAt)
+                listAllFlow.value = stored.toList()
+            }
+        }
+
+        override suspend fun markUsed(foodId: Long, usedAtMillis: Long) {
+            val idx = stored.indexOfFirst { it.id == foodId }
+            if (idx >= 0) {
+                stored[idx] = stored[idx].copy(lastUsedAt = usedAtMillis)
+                listAllFlow.value = stored.toList()
+            }
+        }
+
+        private val recentComparator = compareByDescending<FoodEntity> { it.lastUsedAt ?: Long.MIN_VALUE }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+            .thenByDescending { it.id }
+
+        private val favoriteComparator = compareByDescending<FoodEntity> { it.favoriteAt ?: Long.MIN_VALUE }
+            .thenByDescending { it.lastUsedAt ?: Long.MIN_VALUE }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+            .thenByDescending { it.id }
+
+        private fun rankFoods(items: List<FoodEntity>): List<FoodEntity> = items.sortedWith(
+            compareByDescending<FoodEntity> { it.isFavorite }
+                .thenByDescending { it.favoriteAt ?: Long.MIN_VALUE }
+                .thenByDescending { it.lastUsedAt ?: Long.MIN_VALUE }
+                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+                .thenByDescending { it.id }
+        )
     }
 }

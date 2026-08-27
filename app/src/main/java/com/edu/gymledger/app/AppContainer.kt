@@ -1,7 +1,6 @@
 package com.edu.gymledger.app
 
 import android.content.Context
-import androidx.room.Room
 import com.edu.gymledger.data.db.GymLedgerDatabase
 import com.edu.gymledger.data.remote.FoodLookupClient
 import com.edu.gymledger.data.remote.MonotonicTimeSource
@@ -30,13 +29,7 @@ object AppContainer {
         }
 
     fun initialize(context: Context) {
-        database = Room.databaseBuilder(
-            context.applicationContext,
-            GymLedgerDatabase::class.java,
-            "gym_ledger_database"
-        )
-            .fallbackToDestructiveMigration()
-            .build()
+        database = GymLedgerDatabase.create(context)
 
         settingsRepository = SettingsRepository(context.applicationContext)
     }
